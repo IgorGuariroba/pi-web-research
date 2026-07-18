@@ -38,6 +38,12 @@ export async function runResearch(options: RunResearchOptions): Promise<string> 
     : options.modelRegistry.getAvailable()[0];
   if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
 
+  // IMPORTANTE: reutiliza o ModelRuntime do agente pai. Sem isso, o SDK cria um
+  // runtime novo que NÃO conhece providers registrados dinamicamente por
+  // extensões (ex.: omniroute) — a sessão filha roda com noExtensions:true e
+  // falharia com "No API key found for <provider>".
+  const parentRuntime = (options.modelRegistry as unknown as { runtime?: unknown }).runtime;
+
   const webSearchTool: ToolDefinition<any> = {
     name: "web_search", label: "Web Search",
     description: "Busca a web. Use queries específicas; prefira fontes primárias.",
@@ -72,6 +78,7 @@ export async function runResearch(options: RunResearchOptions): Promise<string> 
   await loader.reload();
   const { session } = await createAgentSession({
     cwd: options.cwd, agentDir, model, thinkingLevel: "low",
+    modelRuntime: parentRuntime as never,
     resourceLoader: loader, settingsManager,
     sessionManager: SessionManager.inMemory(options.cwd),
     noTools: "all", tools: ["web_search", "fetch_url"], customTools: [webSearchTool, fetchUrlTool],

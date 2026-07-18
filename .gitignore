@@ -1,2 +1,5 @@
 # Secrets — chaves API e configuração do provider
 state.json
+
+# Symlinks locais para rodar os testes (peerDeps resolvidos no npm global)
+node_modules/
