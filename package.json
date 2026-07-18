@@ -1,9 +1,15 @@
 {
   "name": "@igor-guari/pi-web-research",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Extensão de pesquisa web para o Pi Coding Agent — delega buscas a um subagente isolado e devolve apenas a síntese, protegendo o contexto do agente principal",
-  "keywords": ["pi-package", "pi", "web-search", "research", "subagent"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "web-search",
+    "research",
+    "subagent"
+  ],
   "author": "Igor Guariroba",
   "license": "MIT",
   "files": [
@@ -22,6 +28,8 @@
     "typebox": "*"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }
