@@ -3,17 +3,18 @@
  *
  * O agente pai vê apenas `research`; o subagente SDK in-process recebe as tools
  * internas `web_search` e `fetch_url`. Providers: Tavily, Exa (HTTP) e Goose (CLI).
- * O SearchEngine resolve o provider dinamicamente a cada busca.
+ * A tool é casca fina: monta as dependências e delega ao núcleo de Research
+ * (research-runner.ts), que executa o subagente e o Fallback cru.
  *
  * Arquitetura:
- *   research(goal, focus, depth) → subagente → web_search(query) → SearchEngine → WebSearchProvider
+ *   research(goal, focus, depth) → núcleo de Research → subagente → web_search(query) → WebSearchProvider
  *     ├─ TavilyProvider    (HTTP, retry/backoff via HttpSearchProvider base)
  *     ├─ ExaProvider       (HTTP, retry/backoff via HttpSearchProvider base)
  *     └─ GooseBuiltinProvider (CLI via goose-adapter.ts)
  *
  * Módulos:
  *   - search-types.ts       contrato público (neutro quanto a provider).
- *   - search-engine.ts      orquestrador com provider dinâmico.
+ *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
  *   - state.ts              storage seguro (state.json, 0600).
  *   - resolve-provider.ts   lógica de resolução do provider ativo.
  *   - tavily-provider.ts    Tavily HTTP provider.
@@ -28,14 +29,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "./research-runner.ts";
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
-import { SearchEngine } from "./search-engine.ts";
-import { GooseBuiltinProvider } from "./goose-provider.ts";
 import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState } from "./state.ts";
 import { resolveActiveProvider } from "./resolve-provider.ts";
 
@@ -63,8 +61,6 @@ export default function webSearchExtension(pi: ExtensionAPI) {
     const exaKey = resolveKeyFromState(statePath, "exa");
     return resolveActiveProvider(activeProviderOverride, tavilyKey, exaKey, pi.exec);
   };
-
-  const engine = new SearchEngine(resolveProvider);
 
   // --------------------------------------------------------------------------- //
   // Comando TUI: /web-search
@@ -257,29 +253,14 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       depth: Type.Optional(Type.Union([Type.Literal("quick"), Type.Literal("deep")], { default: "quick" })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      try {
-        const synthesis = await runResearch({
-          goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", engine,
-          modelRegistry: ctx.modelRegistry, modelRef: loadState(statePath).researchModel,
-          cwd: ctx.cwd, signal,
-          onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }] }),
-        });
-        return { content: [{ type: "text", text: synthesis }], details: { depth: params.depth ?? "quick", synthesized: true } };
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        onUpdate?.({ content: [{ type: "text", text: "Subagente falhou; buscando fallback sem síntese…" }] });
-        const response = await engine.search(params.goal, { timeoutMs: 60_000 }, signal);
-        const meta = response.telemetry.providerMeta as Record<string, unknown> | undefined;
-        const formatted = response.results.length
-          ? response.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.summary}`).join("\n\n")
-          : (meta?.rawAssistantText as string) || "research: sem resultados.";
-        const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
-        const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
-        return {
-          content: [{ type: "text", text: `[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n\n${truncation.content}${notice}` }],
-          details: { provider: response.provider, query: params.goal, resultCount: response.results.length, fallback: true },
-        };
-      }
+      const state = loadState(statePath);
+      return runResearch({
+        goal: params.goal, focus: params.focus, depth: params.depth ?? "quick",
+        providers: [resolveProvider()],
+        modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
+        cwd: ctx.cwd, signal,
+        onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }] }),
+      });
     },
   });
 }
