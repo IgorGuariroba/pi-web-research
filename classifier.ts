@@ -78,6 +78,9 @@ export interface Classifier {
 /** Escolha persistida em /web-search. */
 export type ClassifierChoice = "auto" | "none" | { provider: string; id: string };
 
+/** Escolha padrão: detecção automática. */
+export const DEFAULT_CLASSIFIER: ClassifierChoice = "auto";
+
 /** Acima deste limiar o resultado é descartado como Fora do tema. */
 export const OFF_TOPIC_THRESHOLD = 0.7;
 
@@ -227,7 +230,7 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
  * Resolve o Classificador da escolha salva: `none` → sem classificador;
  * `{provider,id}` → esse, se disponível; `auto` → primeiro da preferência disponível.
  */
-export async function detectClassifier(registry: ModelRegistry, choice: ClassifierChoice = "auto"): Promise<Classifier | undefined> {
+export async function detectClassifier(registry: ModelRegistry, choice: ClassifierChoice = DEFAULT_CLASSIFIER): Promise<Classifier | undefined> {
   if (choice === "none") return undefined;
   let available: readonly ClassifierModel[];
   try {

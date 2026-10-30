@@ -22,13 +22,13 @@ import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
 import { errorMessage } from "./error-message.ts";
-import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
+import { aggregateSearch, DEFAULT_SEARCH_MODE, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
 import {
   curateByRules, isSpam, sourceLevel, sourceLabelText, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
-import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
+import { DEFAULT_CLASSIFIER, detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
 import {
   correctionMessage, declareGap, labelCitations, readsByCategory, ReadSources, removeUnreadCitations, unreadCitations, type SourceLabel,
@@ -218,7 +218,7 @@ const titledLabel = (result: CuratedResult) => `${result.title} ${sourceLabelTex
 /** Busca agregada + curadoria por regras: spam fora, Nível → Concordância, top 8. */
 async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   const { options, funnel } = run;
-  const response = await aggregateSearch(options.providers, query, options.searchMode ?? "agregada", signal);
+  const response = await aggregateSearch(options.providers, query, options.searchMode ?? DEFAULT_SEARCH_MODE, signal);
   const judged = run.classifier ? await curateByClassifier(run, run.classifier, query, response.results, signal) : undefined;
   const curated = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
   funnel.found += response.found;
@@ -309,7 +309,7 @@ const OFF_TOPIC_READ =
 
 function funnelDetails(run: ResearchRun) {
   const details: Record<string, unknown> = {
-    searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel },
+    searchMode: run.options.searchMode ?? DEFAULT_SEARCH_MODE, funnel: { ...run.funnel },
     classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
   };
   if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
@@ -503,7 +503,7 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
   validateCriteria(options.criteria);
   const model = chooseResearchModel(options.modelRegistry, options.modelRef, options.parentModel);
   const researchModel = model ? `${model.provider}/${model.id}` : undefined;
-  const choice = options.classifier ?? "auto";
+  const choice = options.classifier ?? DEFAULT_CLASSIFIER;
   const classifier = typeof choice === "object" && "judgeResults" in choice
     ? choice
     : await detectClassifier(options.modelRegistry, choice);

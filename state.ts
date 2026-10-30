@@ -9,9 +9,9 @@
  *   {
  *     activeProvider?: "tavily" | "exa" | "goose",
  *     researchModel?: { provider, id },
- *     searchMode?: "agregada" | "econômica",
+ *     searchMode?: SearchMode ("agregada" | "econômica"),
  *     blockedDomains?: string[],
- *     classifier?: "auto" | "none" | { provider, id },
+ *     classifier?: ClassifierChoice ("auto" | "none" | { provider, id }),
  *     keys?: { tavily?: string, exa?: string }
  *   }
  *
@@ -21,6 +21,8 @@
 
 import { existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { SearchMode } from "./aggregate-search.ts";
+import type { ClassifierChoice } from "./classifier.ts";
 
 // --------------------------------------------------------------------------- //
 // Tipos
@@ -32,11 +34,11 @@ export interface WebSearchState {
   activeProvider?: ProviderName;
   researchModel?: { provider: string; id: string };
   /** Modo de busca: `agregada` (padrão) ou `econômica`. */
-  searchMode?: "agregada" | "econômica";
+  searchMode?: SearchMode;
   /** Domínios cortados como spam, além da lista fixa. */
   blockedDomains?: string[];
   /** Classificador: `auto` (padrão, detecção), `none` (só regras) ou um modelo específico. */
-  classifier?: "auto" | "none" | { provider: string; id: string };
+  classifier?: ClassifierChoice;
   keys?: {
     tavily?: string;
     exa?: string;

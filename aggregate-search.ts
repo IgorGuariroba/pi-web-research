@@ -15,6 +15,9 @@ import { errorMessage } from "./error-message.ts";
 
 export type SearchMode = "agregada" | "econômica";
 
+/** Modo de busca padrão. */
+export const DEFAULT_SEARCH_MODE: SearchMode = "agregada";
+
 export interface AggregatedResult extends SearchResult {
   /** Providers que encontraram este resultado (Concordância). */
   providers: string[];
@@ -36,7 +39,7 @@ const isGoose = (provider: WebSearchProvider) => provider.name.startsWith("goose
 export async function aggregateSearch(
   providers: readonly WebSearchProvider[],
   query: string,
-  mode: SearchMode = "agregada",
+  mode: SearchMode = DEFAULT_SEARCH_MODE,
   signal?: AbortSignal,
 ): Promise<AggregatedSearch> {
   const keyed = providers.filter((p) => !isGoose(p));

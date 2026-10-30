@@ -39,7 +39,8 @@ import type { WebSearchProvider } from "./search-types.ts";
 import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
 import { canonicalHost } from "./canonical-url.ts";
-import type { SearchMode } from "./aggregate-search.ts";
+import { DEFAULT_SEARCH_MODE, type SearchMode } from "./aggregate-search.ts";
+import { DEFAULT_CLASSIFIER } from "./classifier.ts";
 
 const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
   choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
@@ -123,7 +124,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         {
           value: "mode",
           label: "Modo de busca",
-          description: `atual: ${loadState(statePath).searchMode ?? "agregada"}`,
+          description: `atual: ${loadState(statePath).searchMode ?? DEFAULT_SEARCH_MODE}`,
         },
         {
           value: "classifier",
@@ -339,8 +340,8 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       const state = loadState(statePath);
       return runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", criteria: params.criteria,
-        providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
-        blockedDomains: state.blockedDomains, classifier: state.classifier ?? "auto",
+        providers: resolveProviders(), searchMode: state.searchMode ?? DEFAULT_SEARCH_MODE,
+        blockedDomains: state.blockedDomains, classifier: state.classifier ?? DEFAULT_CLASSIFIER,
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
         cwd: ctx.cwd, signal,
         onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),
