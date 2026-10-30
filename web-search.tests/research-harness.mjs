@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "../research-runner.ts";
-import { questionKeys } from "../classifier.ts";
+import { questionKeys, categoryLabels } from "../classifier.ts";
 
 // --------------------------------------------------------------------------- //
 // Servidor falso OpenAI-compatible
@@ -182,7 +182,7 @@ export const emptyProvider = (name) => fakeProvider(name, []);
 
 /**
  * Classificador falso injetado direto no núcleo (interface Classifier, classifier.ts).
- * judge: (result, input) => { offTopic?: number, level?: "oficial"|"docs"|"blog"|"fórum"|"spam" }
+ * judge: (result, input) => { offTopic?: number, level?: "oficial"|"docs"|"blog"|"fórum"|"spam", category?: string }
  *        ou objeto { "<url>": { offTopic, level } }. Campos omitidos: offTopic 0, level "blog".
  * Opções: name (padrão "fake/classifier"), costUsd por chamada (padrão 0.001), fail (mensagem → rejeita).
  * `.calls` registra os inputs ({ goal, focus, query, results }) de cada chamada.
@@ -215,9 +215,15 @@ export function registryClassifier(provider, id, judge = {}, { costUsd = 0.00000
     async classify(model, ctx) {
       calls.push(ctx);
       const answers = {};
+      // Categoria (quando o adaptador manda Critério): resposta = rótulo do choice da Categoria julgada.
+      const labelOf = new Map([...(ctx.state.criteria ? categoryLabels(ctx.state.criteria) : [])].map(([l, c]) => [c, l]));
       ctx.state.results.forEach((result, i) => {
-        const { offTopic = 0, level = "blog" } = judgeOne(result);
+        const { offTopic = 0, level = "blog", category = "outros" } = judgeOne(result);
         const keys = questionKeys(i);
+        if (ctx.questions[keys.category]) {
+          const choice = labelOf.get(category) ?? "outros";
+          answers[keys.category] = { type: "choice", choice, probabilities: { [choice]: 1 }, confidence: 1 };
+        }
         answers[keys.offTopic] = { type: "bool", probability: offTopic };
         const label = level === "fórum" ? "forum" : level;
         answers[keys.level] = { type: "choice", choice: label, probabilities: { [label]: 1 }, confidence: 1 };

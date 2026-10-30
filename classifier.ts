@@ -9,6 +9,7 @@
  */
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { SourceLevel } from "./source-level.ts";
+import { OTHER_CATEGORY, type Criterion } from "./criteria.ts";
 
 /** Nível atribuído pelo classificador; `spam` sai do Funil. */
 export type JudgedLevel = SourceLevel | "spam";
@@ -24,12 +25,16 @@ export interface JudgeResultsInput {
   focus?: string;
   query: string;
   results: readonly ResultToJudge[];
+  /** Critério do Agente pai: com ele, cada resultado também recebe uma Categoria. */
+  criteria?: readonly Criterion[];
 }
 
 export interface ResultJudgement {
   /** Probabilidade (0..1) de o resultado estar Fora do tema. */
   offTopic: number;
   level: JudgedLevel;
+  /** Categoria do Critério (ou `outros`); só quando o input traz `criteria`. */
+  category?: string;
 }
 
 export interface JudgeResultsOutput {
@@ -63,7 +68,23 @@ export const CLASSIFIER_PREFERENCE: readonly (readonly [string, string])[] = [
 ];
 
 /** Chaves das perguntas do resultado `i` no ClassifierContext (convenção do adaptador Pi). */
-export const questionKeys = (i: number) => ({ offTopic: `r${i}_offtopic`, level: `r${i}_level` });
+export const questionKeys = (i: number) => ({ offTopic: `r${i}_offtopic`, level: `r${i}_level`, category: `r${i}_category` });
+
+/**
+ * Rótulos de choice das Categorias (sem acento/espaço) → Categoria original.
+ * Inclui `outros`. Rótulo colidido vira `c<índice>`.
+ */
+export function categoryLabels(criteria: readonly Criterion[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  criteria.forEach((criterion, i) => {
+    const slug = criterion.category.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+    const label = slug && slug !== OTHER_CATEGORY && !labels.has(slug) ? slug : `c${i}`;
+    labels.set(label, criterion.category);
+  });
+  labels.set(OTHER_CATEGORY, OTHER_CATEGORY);
+  return labels;
+}
 
 const LEVEL_LABELS: Record<string, JudgedLevel> = {
   oficial: "oficial", docs: "docs", blog: "blog", forum: "fórum", spam: "spam",
@@ -79,6 +100,15 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
     name: `${model.provider}/${model.id}`,
     async judgeResults(input, signal) {
       const questions: Record<string, unknown> = {};
+      const criteria = input.criteria?.length ? input.criteria : undefined;
+      const labels = criteria ? categoryLabels(criteria) : undefined;
+      const categoryCriteria: Record<string, string> = {};
+      if (criteria && labels) {
+        for (const [label, category] of labels) {
+          const criterion = criteria.find((c) => c.category === category);
+          categoryCriteria[label] = criterion ? criterion.description : "não se encaixa em nenhuma das outras Categorias";
+        }
+      }
       input.results.forEach((_, i) => {
         const keys = questionKeys(i);
         questions[keys.offTopic] = {
@@ -97,12 +127,20 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
             spam: "spam, fazenda de conteúdo, SEO sem conteúdo",
           },
         };
+        if (criteria) {
+          questions[keys.category] = {
+            type: "choice",
+            instructions: `Categoria do Critério (tipo de fonte) que melhor descreve results[${i}].`,
+            criteria: categoryCriteria,
+          };
+        }
       });
       const state = {
         goal: input.goal, ...(input.focus ? { focus: input.focus } : {}), query: input.query,
         results: input.results.map((result) => ({
           url: result.url, title: result.title, summary: (result.summary ?? "").slice(0, SUMMARY_MAX),
         })),
+        ...(criteria ? { criteria: criteria.map(({ category, description }) => ({ category, description })) } : {}),
       };
       const response = await registry.classify(model, { state, questions } as never, { signal });
       if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
@@ -110,9 +148,11 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
         const keys = questionKeys(i);
         const offTopic = response.answers[keys.offTopic];
         const level = response.answers[keys.level];
+        const category = response.answers[keys.category];
         return {
           offTopic: offTopic?.type === "bool" ? offTopic.probability : 0,
           level: (level?.type === "choice" && LEVEL_LABELS[level.choice]) || "blog",
+          ...(labels ? { category: (category?.type === "choice" && labels.get(category.choice)) || OTHER_CATEGORY } : {}),
         };
       });
       return { judgements, costUsd: response.usage?.cost.total ?? 0 };

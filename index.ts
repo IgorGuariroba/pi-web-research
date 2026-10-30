@@ -291,16 +291,25 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       "Use research para fatos atuais, documentação externa ou conhecimento fora do repositório.",
       "Passe em focus exatamente o que importa para evitar trazer ruído ao contexto.",
       "Use depth=quick por padrão; use deep apenas quando múltiplas buscas/fontes forem necessárias.",
+      "Passe criteria quando o tipo de fonte importa (ex.: relatos de produção, benchmarks, docs oficiais, ou para descartar marketing): 2 a 8 Categorias em ordem de prioridade, ao menos uma sem discard. Omita em pesquisas simples.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "O que deve ser descoberto; não uma query literal." }),
       focus: Type.Optional(Type.String({ description: "O que interessa ao agente pai ou formato desejado." })),
       depth: Type.Optional(Type.Union([Type.Literal("quick"), Type.Literal("deep")], { default: "quick" })),
+      criteria: Type.Optional(Type.Array(Type.Object({
+        category: Type.String({ description: "Nome curto da Categoria de fonte, ex. relato-producao." }),
+        description: Type.String({ description: "Que tipo de fonte pertence a esta Categoria." }),
+        discard: Type.Optional(Type.Boolean({ description: "true = resultados desta Categoria são descartados." })),
+      }), {
+        minItems: 2, maxItems: 8,
+        description: "Critério opcional: 2 a 8 Categorias ordenadas por prioridade (a primeira é a mais importante); ao menos uma sem discard.",
+      })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const state = loadState(statePath);
       return runResearch({
-        goal: params.goal, focus: params.focus, depth: params.depth ?? "quick",
+        goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", criteria: params.criteria,
         providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
         blockedDomains: state.blockedDomains, classifier: state.classifier ?? "auto",
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,

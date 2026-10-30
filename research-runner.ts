@@ -27,6 +27,7 @@ import {
   curateByRules, isSpam, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
 import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
+import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
 import { correctionMessage, ReadSources, removeUnreadCitations, unreadCitations } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
@@ -36,6 +37,8 @@ export interface RunResearchOptions {
   goal: string;
   focus?: string;
   depth: ResearchDepth;
+  /** Critério do Agente pai: 2 a 8 Categorias ordenadas por prioridade. */
+  criteria?: readonly Criterion[];
   /** Providers de busca disponíveis, em ordem de preferência. */
   providers: readonly WebSearchProvider[];
   /** Modo de busca: `agregada` (padrão, todos em paralelo) ou `econômica` (um por vez). */
@@ -99,10 +102,18 @@ interface Funnel {
   spam: number;
   /** Resultados descartados como Fora do tema (só com classificador). */
   offTopic?: number;
+  /** Resultados descartados por Categoria de descarte do Critério (só com Critério ativo). */
+  criteriaDiscarded?: number;
 }
 
-const emptyFunnel = (classifier: Classifier | undefined): Funnel =>
-  ({ found: 0, unique: 0, duplicates: 0, spam: 0, ...(classifier ? { offTopic: 0 } : {}) });
+const emptyFunnel = (classifier: Classifier | undefined, criteria?: readonly Criterion[]): Funnel => ({
+  found: 0, unique: 0, duplicates: 0, spam: 0,
+  ...(classifier ? { offTopic: 0 } : {}),
+  ...(classifier && criteria ? { criteriaDiscarded: 0 } : {}),
+});
+
+/** Resultado curado com a Categoria do Critério, quando houver. */
+type CuratedResult = LeveledResult & { category?: string };
 
 interface ResearchRun {
   options: RunResearchOptions;
@@ -110,6 +121,8 @@ interface ResearchRun {
   searchWarnings: string[];
   classifier?: Classifier;
   classifierCost: number;
+  /** Critério ativo (só com classificador; sem ele o Critério é ignorado). */
+  criteria?: readonly Criterion[];
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -124,21 +137,30 @@ async function curateByClassifier(run: ResearchRun, classifier: Classifier, quer
   const kept = results.filter((result) => !isSpam(result.url, options.blockedDomains));
   let spam = results.length - kept.length;
   let offTopic = 0;
-  if (!kept.length) return { results: [] as LeveledResult[], spam, offTopic };
+  let criteriaDiscarded = 0;
+  if (!kept.length) return { results: [] as CuratedResult[], spam, offTopic, criteriaDiscarded };
+  const criteria = run.criteria;
   try {
     const { judgements, costUsd } = await classifier.judgeResults(
-      { goal: options.goal, focus: options.focus, query, results: kept.map(({ url, title, summary }) => ({ url, title, summary })) },
+      {
+        goal: options.goal, focus: options.focus, query,
+        results: kept.map(({ url, title, summary }) => ({ url, title, summary })),
+        ...(criteria ? { criteria } : {}),
+      },
       signal,
     );
     run.classifierCost += costUsd;
-    const leveled: LeveledResult[] = [];
+    const leveled: CuratedResult[] = [];
     kept.forEach((result, i) => {
       const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
+      const criterion = criteria?.find((c) => c.category === judgement.category);
       if (judgement.offTopic > OFF_TOPIC_THRESHOLD) offTopic++;
       else if (judgement.level === "spam") spam++;
+      else if (criterion?.discard) criteriaDiscarded++;
+      else if (criteria) leveled.push({ ...result, level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY });
       else leveled.push({ ...result, level: judgement.level });
     });
-    return { results: sortByLevel(leveled), spam, offTopic };
+    return { results: criteria ? sortByCriteria(sortByLevel(leveled), criteria) : sortByLevel(leveled), spam, offTopic, criteriaDiscarded };
   } catch (error) {
     if (signal?.aborted) throw error;
     run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorText(error)}; usando regras`);
@@ -146,7 +168,18 @@ async function curateByClassifier(run: ResearchRun, classifier: Classifier, quer
   }
 }
 
-const label = (result: LeveledResult) => `${result.title} ${levelLabel(result)}`;
+/** Ordena por prioridade do Critério (`outros` por último), estável sobre Nível → Concordância. */
+function sortByCriteria(results: CuratedResult[], criteria: readonly Criterion[]): CuratedResult[] {
+  const rank = (result: CuratedResult) => {
+    const index = criteria.findIndex((c) => c.category === result.category);
+    return index < 0 ? criteria.length : index;
+  };
+  return results.sort((a, b) => rank(a) - rank(b));
+}
+
+/** Rótulo `[categoria · nível · providers]` (ou `[nível · providers]` sem Categoria). */
+const label = (result: CuratedResult) =>
+  result.category ? `${result.title} [${result.category} · ${result.level} · ${result.providers.join("+")}]` : `${result.title} ${levelLabel(result)}`;
 
 /** Busca agregada + curadoria por regras: spam fora, Nível → Concordância, top 8. */
 async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
@@ -159,9 +192,14 @@ async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   funnel.duplicates = funnel.found - funnel.unique;
   funnel.spam += curated.spam;
   if (funnel.offTopic !== undefined) funnel.offTopic += judged?.offTopic ?? 0;
+  if (funnel.criteriaDiscarded !== undefined) funnel.criteriaDiscarded += judged?.criteriaDiscarded ?? 0;
   run.searchWarnings.push(...response.warnings);
-  const kept = funnel.unique - funnel.spam - (funnel.offTopic ?? 0);
-  const discarded = funnel.offTopic === undefined ? `${funnel.spam} spam` : `${funnel.spam} spam, ${funnel.offTopic} fora do tema`;
+  const kept = funnel.unique - funnel.spam - (funnel.offTopic ?? 0) - (funnel.criteriaDiscarded ?? 0);
+  const discarded = [
+    `${funnel.spam} spam`,
+    ...(funnel.offTopic === undefined ? [] : [`${funnel.offTopic} fora do tema`]),
+    ...(funnel.criteriaDiscarded === undefined ? [] : [`${funnel.criteriaDiscarded} pelo Critério`]),
+  ].join(", ");
   options.onProgress?.(`${funnel.found} resultados → ${funnel.unique} únicos → ${kept} após descarte (${discarded})`);
   return { ...response, results: curated.results.slice(0, MAX_RESULTS_PER_SEARCH) };
 }
@@ -267,7 +305,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       }
       if (signal?.aborted) throw signal.reason ?? new Error("Pesquisa cancelada.");
     };
-    await prompt(buildResearchPrompt(options.goal, options.focus, depth));
+    await prompt(buildResearchPrompt(options.goal, options.focus, depth, run.criteria));
     let answer = textOfLastAssistant(session.messages);
     if (!answer) throw new Error("Subagente não produziu uma síntese.");
     const unread = unreadCitations(answer, sources);
@@ -288,7 +326,7 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   const { options } = run;
   options.onProgress?.("Subagente falhou; buscando fallback sem síntese…");
   // Contadores do Fallback cru descrevem só a busca do fallback.
-  run.funnel = emptyFunnel(run.classifier);
+  run.funnel = emptyFunnel(run.classifier, run.criteria);
   run.searchWarnings = [];
   const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
@@ -297,38 +335,49 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   const warnings = response.warnings.map((w) => `[Aviso: ${w}]\n`).join("");
   const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
   const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
+  const ignored = criteriaIgnored(run);
   return {
-    content: [{ type: "text", text: `[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n${warnings}\n${truncation.content}${notice}` }],
+    content: [{ type: "text", text: `${ignored ? `[${ignored}]\n` : ""}[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n${warnings}\n${truncation.content}${notice}` }],
     details: {
       provider: response.providers.join("+"), query: options.goal, resultCount: response.results.length,
-      fallback: true, researchModel, ...funnelDetails(run),
+      fallback: true, researchModel, ...(ignored ? { criteriaIgnored: ignored } : {}), ...funnelDetails(run),
     },
   };
 }
+
+const CRITERIA_IGNORED =
+  "Critério ignorado — nenhum classificador disponível; resultados curados só por regras (sem Categoria nem descarte por Critério).";
+
+/** Aviso de Critério ignorado (topo da Síntese e details), quando aplicável. */
+const criteriaIgnored = (run: ResearchRun) => (run.options.criteria && !run.criteria ? CRITERIA_IGNORED : undefined);
 
 const UNVERIFIED_NOTICE =
   "[Síntese não verificada — nenhuma Fonte lida: o subagente não leu nenhuma página com sucesso; a Síntese se apoia apenas em resultados de busca.]";
 
 /** Núcleo de Research: subagente + Fallback cru. */
 export async function runResearch(options: RunResearchOptions): Promise<ResearchResult> {
+  validateCriteria(options.criteria);
   const model = chooseResearchModel(options.modelRegistry, options.modelRef, options.parentModel);
   const researchModel = model ? `${model.provider}/${model.id}` : undefined;
   const choice = options.classifier ?? "auto";
   const classifier = typeof choice === "object" && "judgeResults" in choice
     ? choice
     : await detectClassifier(options.modelRegistry, choice);
-  const run: ResearchRun = { options, funnel: emptyFunnel(classifier), searchWarnings: [], classifier, classifierCost: 0 };
+  const criteria = classifier ? options.criteria : undefined;
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
     const outcome = await runSubagent(run, model);
     const unverified = outcome.sourcesRead === 0;
-    const text = unverified ? `${UNVERIFIED_NOTICE}\n\n${outcome.text}` : outcome.text;
+    const ignored = criteriaIgnored(run);
+    const text = [ignored && `[${ignored}]`, unverified && UNVERIFIED_NOTICE, outcome.text].filter(Boolean).join("\n\n");
     return {
       content: [{ type: "text", text }],
       details: {
         depth: options.depth, synthesized: true, researchModel,
         sourcesRead: outcome.sourcesRead, removedCitations: outcome.removedCitations,
         ...(unverified ? { unverified: true } : {}),
+        ...(ignored ? { criteriaIgnored: ignored } : {}),
         ...funnelDetails(run),
       },
     };
