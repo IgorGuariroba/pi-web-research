@@ -16,9 +16,11 @@
  * Módulos:
  *   - search-types.ts       contrato público (neutro quanto a provider).
  *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
+ *   - curation.ts           curadoria do Funil (busca curada, Extração focada, leitura classificada).
+ *   - research-run.ts       estado da Research (Funil, avisos, details).
  *   - classifier.ts         Classificador (Fora do tema + Nível) sobre o model registry do Pi.
  *   - state.ts              storage seguro (state.json, 0600).
- *   - resolve-provider.ts   lógica de resolução do provider ativo.
+ *   - resolve-provider.ts   resolução da lista de Providers da Busca agregada.
  *   - tavily-provider.ts    Tavily HTTP provider.
  *   - exa-provider.ts       Exa HTTP provider.
  *   - goose-provider.ts     Goose CLI provider.
@@ -38,7 +40,9 @@ import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
 import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
-import type { SearchMode } from "./aggregate-search.ts";
+import { canonicalHost } from "./canonical-url.ts";
+import { DEFAULT_SEARCH_MODE, type SearchMode } from "./aggregate-search.ts";
+import { DEFAULT_CLASSIFIER } from "./classifier.ts";
 
 const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
   choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
@@ -49,13 +53,12 @@ const describeBlockedDomains = (domains: readonly string[] | undefined) =>
 /** "https://www.Spam.com/x, foo.test" → ["spam.com", "foo.test"] (sem esquema, www., caminho; sem repetidos). */
 const parseBlockedDomains = (typed: string) => [...new Set(
   typed.split(/[\s,;]+/)
-    .map((d) => d.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/[/?#].*$/, "").replace(/^www\./, ""))
+    .map((d) => canonicalHost(d.trim().replace(/^[a-z]+:\/\//i, "").replace(/[/?#].*$/, "")))
     .filter(Boolean),
 )];
 
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
-export { resolveActiveProvider } from "./resolve-provider.ts";
 
 // --------------------------------------------------------------------------- //
 // Extension
@@ -123,7 +126,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         {
           value: "mode",
           label: "Modo de busca",
-          description: `atual: ${loadState(statePath).searchMode ?? "agregada"}`,
+          description: `atual: ${loadState(statePath).searchMode ?? DEFAULT_SEARCH_MODE}`,
         },
         {
           value: "classifier",
@@ -339,8 +342,8 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       const state = loadState(statePath);
       return runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", criteria: params.criteria,
-        providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
-        blockedDomains: state.blockedDomains, classifier: state.classifier ?? "auto",
+        providers: resolveProviders(), searchMode: state.searchMode ?? DEFAULT_SEARCH_MODE,
+        blockedDomains: state.blockedDomains, classifier: state.classifier ?? DEFAULT_CLASSIFIER,
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
         cwd: ctx.cwd, signal,
         onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),

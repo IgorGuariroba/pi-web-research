@@ -71,6 +71,9 @@ function scoredChunks(text: string, context: readonly (string | undefined)[]): P
 
 const byRules = (a: Passage, b: Passage) => b.score - a.score || a.index - b.index;
 
+/** Trechos com sobreposição de termos, do mais ao menos relevante pelas regras. */
+const relevantByRules = (chunks: readonly Passage[]) => chunks.filter((c) => c.score > 0).sort(byRules);
+
 /** Junta os trechos na ordem de preferência dada até maxChars; devolve-os em ordem original. */
 function assemble(pool: readonly Passage[], maxChars: number): string {
   const picked: Passage[] = [];
@@ -94,7 +97,7 @@ function assemble(pool: readonly Passage[], maxChars: number): string {
 export function focusedExtract(text: string, context: readonly (string | undefined)[], maxChars = FOCUSED_MAX_CHARS): string {
   if (text.length <= maxChars) return text;
   const chunks = scoredChunks(text, context);
-  const relevant = chunks.filter((c) => c.score > 0).sort(byRules);
+  const relevant = relevantByRules(chunks);
   return assemble(relevant.length ? relevant : chunks, maxChars); // sem sobreposição: começo da página
 }
 
@@ -111,7 +114,7 @@ export function focusedCandidates(
 ): { passages: string[]; extract(scores: readonly number[]): string } | undefined {
   if (text.length <= maxChars) return undefined;
   const chunks = scoredChunks(text, context);
-  const relevant = chunks.filter((c) => c.score > 0).sort(byRules);
+  const relevant = relevantByRules(chunks);
   const rest = chunks.filter((c) => c.score <= 0);
   const candidates = [...relevant, ...rest].slice(0, max);
   return {

@@ -15,6 +15,7 @@ import {
   gooseResponseFromText,
 } from "./goose-adapter.ts";
 import { existsSync } from "node:fs";
+import { errorMessage } from "./error-message.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -110,8 +111,7 @@ export class GooseBuiltinProvider implements WebSearchProvider {
     try {
       res = await this.exec(bin, args, { signal, timeout: timeoutMs });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`web_search: falha ao executar goose (${bin}): ${msg}`);
+      throw new Error(`web_search: falha ao executar goose (${bin}): ${errorMessage(err)}`);
     }
     const durationMs = Date.now() - start;
 

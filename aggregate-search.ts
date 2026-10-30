@@ -11,10 +11,12 @@
  */
 import type { SearchResult, WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
-
-export { canonicalUrl };
+import { errorMessage } from "./error-message.ts";
 
 export type SearchMode = "agregada" | "econômica";
+
+/** Modo de busca padrão. */
+export const DEFAULT_SEARCH_MODE: SearchMode = "agregada";
 
 export interface AggregatedResult extends SearchResult {
   /** Providers que encontraram este resultado (Concordância). */
@@ -34,12 +36,10 @@ export interface AggregatedSearch {
 
 const isGoose = (provider: WebSearchProvider) => provider.name.startsWith("goose");
 
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
 export async function aggregateSearch(
   providers: readonly WebSearchProvider[],
   query: string,
-  mode: SearchMode = "agregada",
+  mode: SearchMode = DEFAULT_SEARCH_MODE,
   signal?: AbortSignal,
 ): Promise<AggregatedSearch> {
   const keyed = providers.filter((p) => !isGoose(p));

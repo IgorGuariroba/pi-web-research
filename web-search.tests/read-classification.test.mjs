@@ -114,18 +114,30 @@ test("página fora das buscas sem Critério recebe o Nível do classificador", a
   }
 });
 
-test("página fora das buscas Fora do tema não cobre Categoria", async () => {
-  const classifier = fakeClassifier({ [FORUM]: { category: "relato-producao", level: "blog", offTopic: 0.95 } });
-  const h = await setupResearch({
-    modelRef, classifier, providers: [fakeProvider("tavily", [])],
-    pages: { [FORUM]: page("Receita de bolo.") },
-    script: [turn.fetch(FORUM), turn.text(`Síntese.\n\nFontes\n- ${FORUM}`)],
+// Decisão (review): "Fora do tema é sempre descartado" vale também para a página
+// lida fora das buscas — com ou sem Critério ela não é Fonte lida, não cobre
+// Categoria, não aparece rotulada em Fontes e entra nos descartes dos details.
+for (const withCriteria of [true, false]) {
+  test(`página fora das buscas Fora do tema é descartada (${withCriteria ? "com" : "sem"} Critério)`, async () => {
+    const classifier = fakeClassifier({ [FORUM]: { category: "relato-producao", level: "blog", offTopic: 0.95 } });
+    const cite = `Síntese.\n\nFontes\n- ${FORUM}`;
+    const h = await setupResearch({
+      modelRef, classifier, providers: [fakeProvider("tavily", [])],
+      pages: { [FORUM]: page("Receita de bolo.") },
+      script: [turn.fetch(FORUM), turn.text(cite), turn.text(cite)],
+    });
+    try {
+      const result = await h.run({ goal: "Bun em produção", ...(withCriteria ? { criteria } : {}) });
+      const text = textOf(result);
+      assert.match(h.llm.toolResults()[0], /Fora do tema/);
+      assert.doesNotMatch(h.llm.toolResults()[0], /Receita de bolo/);
+      assert.doesNotMatch(text, /forum\.algo\.test.*\[/);
+      assert.equal(result.details.sourcesRead, 0);
+      assert.deepEqual(result.details.removedCitations, [FORUM]);
+      assert.deepEqual(result.details.offTopicDiscarded, [{ url: FORUM, offTopic: 0.95 }]);
+      if (withCriteria) assert.deepEqual(result.details.readsByCategory, { "relato-producao": 0, benchmark: 0 });
+    } finally {
+      await h.cleanup();
+    }
   });
-  try {
-    const result = await h.run({ goal: "Bun em produção", criteria });
-    assert.match(textOf(result), /\[outros · blog\]/);
-    assert.deepEqual(result.details.readsByCategory, { "relato-producao": 0, benchmark: 0 });
-  } finally {
-    await h.cleanup();
-  }
-});
+}

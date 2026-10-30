@@ -1,7 +1,7 @@
 /**
- * Search Engine — contrato público (neutro quanto a provider).
+ * search-types.ts — contrato público de busca (neutro quanto a provider).
  *
- * Nem tool, nem engine, nem pipeline conhecem "goose". Eles operam sobre estes
+ * Nem a tool nem a Busca agregada conhecem "goose". Eles operam sobre estes
  * tipos. O adapter específico de cada provider (ex: goose-adapter.ts) converte o
  * formato cru do provider neste contrato.
  *
@@ -67,33 +67,11 @@ export interface SearchResponse {
   telemetry: SearchTelemetry;
 }
 
-/** Contrato de um provedor de web search. Tool/engine não conhecem a implementação. */
+/** Contrato de um provedor de web search. Tool e Busca agregada não conhecem a implementação. */
 export interface WebSearchProvider {
   readonly name: string;
   search(query: string, options: SearchOptions, signal?: AbortSignal): Promise<SearchResponse>;
 }
-
-/** Metadados que fluem pela pipeline — cada estágio consome o que precisa. */
-export interface SearchContext {
-  query: string;
-  // TODO: provider, options, timeout — conforme estágios (ex: Cache) exigirem.
-}
-
-/**
- * Estágio do pipeline de pós-processamento do SearchEngine. Contrato puro:
- * recebe SearchResponse + contexto, devolve SearchResponse transformada.
- *
- * Princípio arquitetural: estágios devem ser puros sempre que possível
- * (Canonicalizer, Deduplicator, Reranker heurístico). Só introduza efeito
- * colateral onde inevitável (Cache, Provider).
- *
- * Exemplo:
- *   const canonicalizer: SearchStage = async (r, ctx) => ({ ...r, results: canonicalize(r.results) });
- */
-export type SearchStage = (
-  response: SearchResponse,
-  context: SearchContext,
-) => Promise<SearchResponse>;
 
 /** Execução desacoplada do ExtensionAPI (DI p/ manter o provider testável). */
 export interface ExecFn {
@@ -103,10 +81,3 @@ export interface ExecFn {
     opts: { signal?: AbortSignal; timeout?: number },
   ): Promise<ExecResult>;
 }
-
-/**
- * Função que resolve o provider ativo. Chamada uma única vez no topo de cada
- * search() e mantida até o fim daquela chamada. Troca no meio de uma busca
- * não afeta a busca em andamento — vale só da próxima.
- */
-export type ResolveProvider = () => WebSearchProvider;

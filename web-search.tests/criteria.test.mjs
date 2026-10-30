@@ -120,6 +120,49 @@ test("sem classificador, o aviso de Critério ignorado também vai no Fallback c
     assert.ok(result.details.criteriaIgnored);
   }));
 
+/** Classificador que falha só na primeira chamada (queda no meio da pesquisa). */
+function flakyClassifier() {
+  const ok = fakeClassifier({ "https://a.test/dois": { category: "benchmark", level: "docs" } });
+  let calls = 0;
+  return { ...ok, async judgeResults(input) { if (calls++ === 0) throw new Error("timeout"); return ok.judgeResults(input); } };
+}
+
+test("falha do classificador no meio da pesquisa: Critério degradado na Síntese e nos details", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", (q) => [r(`https://a.test/${q}`, q)])],
+    script: [turn.search("um"), turn.search("dois"), turn.text("Síntese")],
+    classifier: flakyClassifier(),
+  }, async (h) => {
+    const result = await h.run({ goal: "Bun em produção", criteria });
+    const text = textOf(result);
+    assert.match(text, /^\[Critério degradado — classificador fake\/classifier falhou em 1 julgamento/);
+    assert.match(result.details.criteriaDegraded, /falhou em 1 julgamento/);
+    assert.equal(result.details.criteriaIgnored, undefined);
+    assert.ok(result.details.searchWarnings.some((w) => /falhou: timeout/.test(w)));
+  }));
+
+test("falha do classificador com Critério também sinaliza Critério degradado no Fallback cru", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r("https://a.test/x", "A")])],
+    script: [turn.error(400, "quebrou")],
+    classifier: fakeClassifier({}, { fail: "cota" }),
+  }, async (h) => {
+    const result = await h.run({ goal: "Bun em produção", criteria });
+    assert.equal(result.details.fallback, true);
+    assert.match(textOf(result), /^\[Critério degradado/);
+    assert.ok(result.details.criteriaDegraded);
+  }));
+
+test("classificador sem falhas: sem aviso de Critério degradado", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r("https://a.test/x", "A")])],
+    classifier: fakeClassifier(),
+  }, async (h) => {
+    const result = await h.run({ goal: "Bun em produção", criteria });
+    assert.equal(result.details.criteriaDegraded, undefined);
+    assert.doesNotMatch(textOf(result), /Critério degradado/);
+  }));
+
 test("sem criteria: comportamento do Classificador mantido (rótulo sem Categoria, sem contagem de Critério)", () =>
   withResearch({
     providers: [fakeProvider("tavily", [r("https://a.test/x", "A")])],

@@ -3,7 +3,7 @@
 // Mock de ctx.ui e state; testa a lógica do handler sem TUI real.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveActiveProvider } from "../resolve-provider.ts";
+import { resolveSearchProviders } from "../resolve-provider.ts";
 import { loadState, saveState, resolveKey } from "../state.ts";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -21,10 +21,10 @@ test("TUI: sem hasUI — resolveProvider usa state.json default", () => {
   const state = loadState(STATE_PATH);
   const tavilyKey = resolveKey(STATE_PATH, "tavily");
   const exaKey = resolveKey(STATE_PATH, "exa");
-  const provider = resolveActiveProvider(state.activeProvider, tavilyKey, exaKey, mockExec);
+  const providers = resolveSearchProviders(state.activeProvider, tavilyKey, exaKey, mockExec);
   // Deve ter algum provider (não crashar)
-  assert.ok(provider.name);
-  assert.ok(["tavily", "exa", "goose:computercontroller"].includes(provider.name));
+  assert.ok(providers.length);
+  for (const provider of providers) assert.ok(["tavily", "exa", "goose:computercontroller"].includes(provider.name));
 });
 
 test("TUI: com hasUI — handler espera select/input (mock)", async () => {
