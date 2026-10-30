@@ -114,6 +114,9 @@ const emptyFunnel = (classifier: Classifier | undefined, criteria?: readonly Cri
   ...(classifier && criteria ? { criteriaDiscarded: 0 } : {}),
 });
 
+/** Resultados que sobreviveram ao descarte (spam, Fora do tema, Critério). */
+const keptCount = (funnel: Funnel) => funnel.unique - funnel.spam - (funnel.offTopic ?? 0) - (funnel.criteriaDiscarded ?? 0);
+
 /** Resultado curado com a Categoria do Critério, quando houver. */
 type CuratedResult = LeveledResult & { category?: string };
 
@@ -196,7 +199,7 @@ async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   if (funnel.offTopic !== undefined) funnel.offTopic += judged?.offTopic ?? 0;
   if (funnel.criteriaDiscarded !== undefined) funnel.criteriaDiscarded += judged?.criteriaDiscarded ?? 0;
   run.searchWarnings.push(...response.warnings);
-  const kept = funnel.unique - funnel.spam - (funnel.offTopic ?? 0) - (funnel.criteriaDiscarded ?? 0);
+  const kept = keptCount(funnel);
   const discarded = [
     `${funnel.spam} spam`,
     ...(funnel.offTopic === undefined ? [] : [`${funnel.offTopic} fora do tema`]),
@@ -394,6 +397,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     const { text: verified, removed } = removeUnreadCitations(answer, sources);
     const labeled = labelCitations(verified, sources);
     const text = run.criteria ? declareGap(labeled, sources, run.criteria) : labeled;
+    options.onProgress?.(`${run.funnel.found} resultados → ${keptCount(run.funnel)} após descarte → ${sources.size} lidos`);
     return {
       text, sourcesRead: sources.size, removedCitations: removed,
       ...(run.criteria ? { readsByCategory: readsByCategory(sources, run.criteria) } : {}),
