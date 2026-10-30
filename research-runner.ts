@@ -234,12 +234,19 @@ async function focusPage(run: ResearchRun, text: string, queries: readonly strin
 
 const READ_SUMMARY_MAX = 300;
 
+/** Página lida julgada Fora do tema: sempre descartada (não vira Fonte lida). */
+interface OffTopicRead {
+  offTopic: number;
+}
+
 /**
  * Classificação na leitura de página fora das buscas: Fora do tema, Nível e
- * Categoria do Critério. Fora do tema → Categoria `outros` (não cobre).
- * Spam ou falha → Nível por regras. undefined = sem classificador ou falha.
+ * Categoria do Critério. Fora do tema → descarte (com ou sem Critério).
+ * Spam → Nível por regras. undefined = sem classificador ou falha.
  */
-async function classifyRead(run: ResearchRun, url: string, text: string, queries: readonly string[], signal?: AbortSignal): Promise<SourceLabel | undefined> {
+async function classifyRead(
+  run: ResearchRun, url: string, text: string, queries: readonly string[], signal?: AbortSignal,
+): Promise<SourceLabel | OffTopicRead | undefined> {
   const { options, classifier, criteria } = run;
   if (!classifier) return undefined;
   const title = (text.split("\n", 1)[0] ?? "").trim().slice(0, 200) || url;
@@ -255,10 +262,10 @@ async function classifyRead(run: ResearchRun, url: string, text: string, queries
     run.classifierCost += costUsd;
     const judgement = judgements[0];
     if (!judgement) return undefined;
+    if (judgement.offTopic > OFF_TOPIC_THRESHOLD) return { offTopic: judgement.offTopic };
     const level = judgement.level === "spam" ? sourceLevel(url, subjectTerms(options.goal, ...queries)) : judgement.level;
     if (!criteria) return { level };
-    const onTopic = judgement.offTopic <= OFF_TOPIC_THRESHOLD;
-    const category = onTopic ? criteria.find((c) => c.category === judgement.category)?.category : undefined;
+    const category = criteria.find((c) => c.category === judgement.category)?.category;
     return { level, category: category ?? OTHER_CATEGORY };
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -266,6 +273,9 @@ async function classifyRead(run: ResearchRun, url: string, text: string, queries
     return undefined;
   }
 }
+
+const OFF_TOPIC_READ =
+  "Página descartada: Fora do tema do Goal. Não é Fonte lida; não a cite em 'Fontes' e não use o conteúdo dela.";
 
 function funnelDetails(run: ResearchRun) {
   const details: Record<string, unknown> = {
@@ -293,12 +303,14 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const queries: string[] = [];
   /** Classificação dos resultados mostrados nas buscas, pela URL canônica. */
   const seen = new Map<string, SourceLabel>();
-  const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel> => {
+  /** Rótulo da Fonte lida; undefined = página Fora do tema (descartada). */
+  const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel | undefined> => {
     const known = seen.get(sourceKey(requested)) ?? seen.get(sourceKey(final));
     if (known) return known;
     // Página fora das buscas: classificada na leitura; sem classificador (ou em
     // falha), Nível por regras e Categoria `outros` com Critério ativo.
     const judged = await classifyRead(run, final, text, queries, toolSignal);
+    if (judged && "offTopic" in judged) return undefined;
     if (judged) return judged;
     const level = sourceLevel(final, subjectTerms(options.goal, ...queries));
     return run.criteria ? { level, category: OTHER_CATEGORY } : { level };
@@ -342,7 +354,9 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
         if (error instanceof UnsupportedPdfError) budget.refundFetch();
         throw error;
       }
-      sources.add(params.url, page.url, await labelOf(params.url, page.url, page.text, toolSignal));
+      const sourceLabel = await labelOf(params.url, page.url, page.text, toolSignal);
+      if (!sourceLabel) return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${OFF_TOPIC_READ}` }] };
+      sources.add(params.url, page.url, sourceLabel);
       const text = await focusPage(run, page.text, queries, toolSignal);
       return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
     },
