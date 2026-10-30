@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, type HttpFetch } from "./fetch-url.ts";
+import { correctionMessage, ReadSources, removeUnreadCitations, unreadCitations } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
 type Model = NonNullable<ReturnType<ModelRegistry["find"]>>;
@@ -109,9 +110,16 @@ function funnelDetails(run: ResearchRun) {
   return details;
 }
 
-async function runSubagent(run: ResearchRun, model: Model): Promise<string> {
+interface SubagentOutcome {
+  text: string;
+  sourcesRead: number;
+  removedCitations: string[];
+}
+
+async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutcome> {
   const { options } = run;
   const { depth, signal } = options;
+  const sources = new ReadSources();
   const budget = createResearchBudget(depth);
   const limits = getResearchLimits(depth);
 
@@ -143,6 +151,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<string> {
       if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }] };
       options.onProgress?.(`Lendo fonte: ${params.url}`);
       const page = await fetchPage(params.url, toolSignal, options.fetch);
+      sources.add(params.url, page.url);
       return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${page.text}` }] };
     },
   };
@@ -166,24 +175,35 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<string> {
   signal?.addEventListener("abort", abort, { once: true });
   try {
     options.onProgress?.(`Pesquisa ${depth} iniciada…`);
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        session.prompt(buildResearchPrompt(options.goal, options.focus, depth), { expandPromptTemplates: false, source: "extension" }),
-        new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => {
-            void session.abort();
-            reject(new Error("Pesquisa excedeu o timeout."));
-          }, limits.timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-    if (signal?.aborted) throw signal.reason ?? new Error("Pesquisa cancelada.");
-    const answer = textOfLastAssistant(session.messages);
+    const deadline = Date.now() + limits.timeoutMs;
+    const prompt = async (text: string) => {
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          session.prompt(text, { expandPromptTemplates: false, source: "extension" }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => {
+              void session.abort();
+              reject(new Error("Pesquisa excedeu o timeout."));
+            }, Math.max(0, deadline - Date.now()));
+          }),
+        ]);
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
+      if (signal?.aborted) throw signal.reason ?? new Error("Pesquisa cancelada.");
+    };
+    await prompt(buildResearchPrompt(options.goal, options.focus, depth));
+    let answer = textOfLastAssistant(session.messages);
     if (!answer) throw new Error("Subagente não produziu uma síntese.");
-    return answer;
+    const unread = unreadCitations(answer, sources);
+    if (unread.length) {
+      options.onProgress?.(`Fontes não lidas citadas (${unread.length}); pedindo correção…`);
+      await prompt(correctionMessage(unread));
+      answer = textOfLastAssistant(session.messages) || answer;
+    }
+    const { text, removed } = removeUnreadCitations(answer, sources);
+    return { text, sourcesRead: sources.size, removedCitations: removed };
   } finally {
     signal?.removeEventListener("abort", abort);
     session.dispose();
@@ -212,6 +232,9 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   };
 }
 
+const UNVERIFIED_NOTICE =
+  "[Síntese não verificada — nenhuma Fonte lida: o subagente não leu nenhuma página com sucesso; a Síntese se apoia apenas em resultados de busca.]";
+
 /** Núcleo de Research: subagente + Fallback cru. */
 export async function runResearch(options: RunResearchOptions): Promise<ResearchResult> {
   const model = chooseResearchModel(options.modelRegistry, options.modelRef, options.parentModel);
@@ -219,10 +242,17 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
   const run: ResearchRun = { options, funnel: { found: 0, unique: 0, duplicates: 0 }, searchWarnings: [] };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
-    const synthesis = await runSubagent(run, model);
+    const outcome = await runSubagent(run, model);
+    const unverified = outcome.sourcesRead === 0;
+    const text = unverified ? `${UNVERIFIED_NOTICE}\n\n${outcome.text}` : outcome.text;
     return {
-      content: [{ type: "text", text: synthesis }],
-      details: { depth: options.depth, synthesized: true, researchModel, ...funnelDetails(run) },
+      content: [{ type: "text", text }],
+      details: {
+        depth: options.depth, synthesized: true, researchModel,
+        sourcesRead: outcome.sourcesRead, removedCitations: outcome.removedCitations,
+        ...(unverified ? { unverified: true } : {}),
+        ...funnelDetails(run),
+      },
     };
   } catch (error) {
     if (options.signal?.aborted) throw error;
