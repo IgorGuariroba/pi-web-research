@@ -21,7 +21,8 @@ import { Type } from "typebox";
 import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
-import { fetchPage, type HttpFetch } from "./fetch-url.ts";
+import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
+import { focusedExtract } from "./focused-extract.ts";
 import {
   curateByRules, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
@@ -135,6 +136,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const sources = new ReadSources();
   const budget = createResearchBudget(depth);
   const limits = getResearchLimits(depth);
+  const queries: string[] = [];
 
   // IMPORTANTE: reutiliza o ModelRuntime do agente pai. Sem isso, o SDK cria um
   // runtime novo que NÃO conhece providers registrados dinamicamente por
@@ -149,6 +151,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     async execute(_id, params, toolSignal) {
       if (!budget.consumeSearch()) return { content: [{ type: "text", text: "Orçamento de buscas esgotado. Produza a síntese final agora." }] };
       options.onProgress?.(`Buscando: ${params.query}`);
+      queries.push(params.query);
       const result = await search(run, params.query, toolSignal);
       const list = result.results.map((r, i) => `${i + 1}. ${label(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
         || result.rawText || "Sem resultados.";
@@ -163,9 +166,16 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     async execute(_id, params, toolSignal) {
       if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }] };
       options.onProgress?.(`Lendo fonte: ${params.url}`);
-      const page = await fetchPage(params.url, toolSignal, options.fetch);
+      let page: Awaited<ReturnType<typeof fetchPage>>;
+      try {
+        page = await fetchPage(params.url, toolSignal, options.fetch);
+      } catch (error) {
+        if (error instanceof UnsupportedPdfError) budget.refundFetch();
+        throw error;
+      }
       sources.add(params.url, page.url);
-      return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${page.text}` }] };
+      const text = focusedExtract(page.text, [options.goal, options.focus, ...queries]);
+      return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
     },
   };
 
