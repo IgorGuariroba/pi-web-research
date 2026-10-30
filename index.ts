@@ -16,6 +16,8 @@
  * Módulos:
  *   - search-types.ts       contrato público (neutro quanto a provider).
  *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
+ *   - curation.ts           curadoria do Funil (busca curada, Extração focada, leitura classificada).
+ *   - research-run.ts       estado da Research (Funil, avisos, details).
  *   - classifier.ts         Classificador (Fora do tema + Nível) sobre o model registry do Pi.
  *   - state.ts              storage seguro (state.json, 0600).
  *   - resolve-provider.ts   resolução da lista de Providers da Busca agregada.
