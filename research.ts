@@ -25,6 +25,8 @@ export function buildResearchPrompt(goal: string, focus: string | undefined, dep
 export interface ResearchBudget {
   consumeSearch(): boolean;
   consumeFetch(): boolean;
+  /** Devolve uma leitura consumida que não chegou a ser feita (ex.: PDF). */
+  refundFetch(): void;
 }
 
 export function createResearchBudget(depth: ResearchDepth): ResearchBudget {
@@ -34,5 +36,6 @@ export function createResearchBudget(depth: ResearchDepth): ResearchBudget {
   return {
     consumeSearch: () => searches++ < limits.searches,
     consumeFetch: () => fetches++ < limits.fetches,
+    refundFetch: () => { if (fetches > 0) fetches--; },
   };
 }
