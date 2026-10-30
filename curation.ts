@@ -4,7 +4,7 @@
  * Classificador quando houver; regras como caminho padrão e em falha.
  */
 import { aggregateSearch, DEFAULT_SEARCH_MODE, type AggregatedResult } from "./aggregate-search.ts";
-import { OFF_TOPIC_THRESHOLD, type Classifier } from "./classifier.ts";
+import { OFF_TOPIC_THRESHOLD, type Classifier, type ResultJudgement } from "./classifier.ts";
 import { OTHER_CATEGORY, type Criterion } from "./criteria.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
 import type { SourceLabel } from "./read-sources.ts";
@@ -41,21 +41,34 @@ async function curateByClassifier(run: ResearchRun, classifier: Classifier, quer
     const leveled: CuratedResult[] = [];
     kept.forEach((result, i) => {
       const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
-      const criterion = criteria?.find((c) => c.category === judgement.category);
-      if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
+      const decision = decide(judgement, criteria);
+      if (!("discard" in decision)) leveled.push({ ...result, ...decision });
+      else if (decision.discard === "fora do tema") {
         offTopic++;
         recordOffTopic(run, result.url, judgement.offTopic);
       }
-      else if (judgement.level === "spam") spam++;
-      else if (criterion?.discard) criteriaDiscarded++;
-      else if (criteria) leveled.push({ ...result, level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY });
-      else leveled.push({ ...result, level: judgement.level });
+      else if (decision.discard === "spam") spam++;
+      else criteriaDiscarded++;
     });
     return { results: criteria ? sortByCriteria(sortByLevel(leveled), criteria) : sortByLevel(leveled), spam, offTopic, criteriaDiscarded };
   } catch (error) {
     classifierFailed(run, classifier, error, signal, true);
     return undefined;
   }
+}
+
+/**
+ * Decisão única sobre um julgamento do classificador, usada nas buscas e na
+ * leitura: Fora do tema → spam → Categoria de descarte → rótulo (Nível e,
+ * com Critério, Categoria ou `outros`).
+ */
+function decide(judgement: ResultJudgement, criteria: readonly Criterion[] | undefined): SourceLabel | DiscardedPage {
+  if (judgement.offTopic > OFF_TOPIC_THRESHOLD) return { discard: "fora do tema" };
+  if (judgement.level === "spam") return { discard: "spam" };
+  if (!criteria) return { level: judgement.level };
+  const criterion = criteria.find((c) => c.category === judgement.category);
+  if (criterion?.discard) return { discard: "critério" };
+  return { level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY };
 }
 
 /** Ordena por prioridade do Critério (`outros` por último), estável sobre Nível → Concordância. */
@@ -145,15 +158,9 @@ export async function classifyRead(
     run.classifierCost += costUsd;
     const judgement = judgements[0];
     if (!judgement) return undefined;
-    if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
-      recordOffTopic(run, url, judgement.offTopic);
-      return { discard: "fora do tema" };
-    }
-    if (judgement.level === "spam") return { discard: "spam" };
-    if (!criteria) return { level: judgement.level };
-    const criterion = criteria.find((c) => c.category === judgement.category);
-    if (criterion?.discard) return { discard: "critério" };
-    return { level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY };
+    const decision = decide(judgement, criteria);
+    if ("discard" in decision && decision.discard === "fora do tema") recordOffTopic(run, url, judgement.offTopic);
+    return decision;
   } catch (error) {
     classifierFailed(run, classifier, error, signal, true);
     return undefined;
