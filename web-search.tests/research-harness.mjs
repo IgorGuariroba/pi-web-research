@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "../research-runner.ts";
-import { questionKeys, categoryLabels } from "../classifier.ts";
+import { questionKeys, categoryLabels, passageKey } from "../classifier.ts";
 
 // --------------------------------------------------------------------------- //
 // Servidor falso OpenAI-compatible
@@ -186,18 +186,29 @@ export const emptyProvider = (name) => fakeProvider(name, []);
  *        ou objeto { "<url>": { offTopic, level } }. Campos omitidos: offTopic 0, level "blog".
  * Opções: name (padrão "fake/classifier"), costUsd por chamada (padrão 0.001), fail (mensagem → rejeita).
  * `.calls` registra os inputs ({ goal, focus, query, results }) de cada chamada.
+ * Extração focada (#10): `passages: (trecho, input) => nota 0..1` habilita `scorePassages`
+ * (sem ela o classificador não dá nota a trechos → regras); `passageCostUsd` (padrão 0.002),
+ * `failPassages` (mensagem → rejeita). `.passageCalls` = inputs ({ goal, focus, query, passages }).
  */
-export function fakeClassifier(judge = {}, { name = "fake/classifier", costUsd = 0.001, fail } = {}) {
+export function fakeClassifier(judge = {}, { name = "fake/classifier", costUsd = 0.001, fail, passages, passageCostUsd = 0.002, failPassages } = {}) {
   const calls = [];
+  const passageCalls = [];
   const judgeOne = typeof judge === "function" ? judge : (result) => judge[result.url] ?? {};
   return {
-    name, calls,
+    name, calls, passageCalls,
     async judgeResults(input) {
       calls.push(input);
       if (fail) throw new Error(fail);
       const judgements = input.results.map((result) => ({ offTopic: 0, level: "blog", ...judgeOne(result, input) }));
       return { judgements, costUsd };
     },
+    ...(passages ? {
+      async scorePassages(input) {
+        passageCalls.push(input);
+        if (failPassages) throw new Error(failPassages);
+        return { scores: input.passages.map((p) => passages(p, input)), costUsd: passageCostUsd };
+      },
+    } : {}),
   };
 }
 
@@ -206,8 +217,9 @@ export function fakeClassifier(judge = {}, { name = "fake/classifier", costUsd =
  * judge: igual a fakeClassifier. Responde às perguntas montadas pelo adaptador
  * (chaves de questionKeys(i) em classifier.ts). `.calls` = ClassifierContext recebidos.
  * Uso: setupResearch({ registryClassifiers: [registryClassifier("openrouter", "typesafe/jev-1.14", judge)], classifier: "auto" })
+ * `passages: (trecho) => nota 0..1` responde às perguntas de relevância de trechos (padrão 0.5).
  */
-export function registryClassifier(provider, id, judge = {}, { costUsd = 0.000004, stopReason = "stop" } = {}) {
+export function registryClassifier(provider, id, judge = {}, { costUsd = 0.000004, stopReason = "stop", passages = () => 0.5 } = {}) {
   const calls = [];
   const judgeOne = typeof judge === "function" ? judge : (result) => judge[result.url] ?? {};
   return {
@@ -216,8 +228,11 @@ export function registryClassifier(provider, id, judge = {}, { costUsd = 0.00000
       calls.push(ctx);
       const answers = {};
       // Categoria (quando o adaptador manda Critério): resposta = rótulo do choice da Categoria julgada.
+      (ctx.state.passages ?? []).forEach((passage, i) => {
+        answers[passageKey(i)] = { type: "bool", probability: passages(passage) };
+      });
       const labelOf = new Map([...(ctx.state.criteria ? categoryLabels(ctx.state.criteria) : [])].map(([l, c]) => [c, l]));
-      ctx.state.results.forEach((result, i) => {
+      (ctx.state.results ?? []).forEach((result, i) => {
         const { offTopic = 0, level = "blog", category = "outros" } = judgeOne(result);
         const keys = questionKeys(i);
         if (ctx.questions[keys.category]) {

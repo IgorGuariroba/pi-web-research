@@ -139,7 +139,7 @@ test("Critério ignorado sem classificador: sem \"Não encontrado\" e Fontes só
     assert.doesNotMatch(text, /Não encontrado/);
   }));
 
-test("página lida fora das buscas entra em \"Fontes\" como [outros · nível] e não cobre Categoria", () =>
+test("página lida fora das buscas classificada como outros entra em \"Fontes\" como [outros · nível] e não cobre Categoria", () =>
   withResearch({
     providers: [fakeProvider("tavily", [])],
     pages: { "https://forum.algo.test/t/1": page("Relato.") },
@@ -148,6 +148,6 @@ test("página lida fora das buscas entra em \"Fontes\" como [outros · nível] e
   }, async (h) => {
     const result = await h.run({ goal: "Bun em produção", criteria });
     const text = textOf(result);
-    assert.match(text, /Fontes\n- https:\/\/forum\.algo\.test\/t\/1 \[outros · fórum\]\n\nNão encontrado\n- relato-producao/);
+    assert.match(text, /Fontes\n- https:\/\/forum\.algo\.test\/t\/1 \[outros · blog\]\n\nNão encontrado\n- relato-producao/);
     assert.deepEqual(result.details.readsByCategory, { "relato-producao": 0, benchmark: 0, issue: 0 });
   }));

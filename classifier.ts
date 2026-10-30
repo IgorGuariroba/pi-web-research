@@ -44,11 +44,35 @@ export interface JudgeResultsOutput {
   costUsd: number;
 }
 
+export interface ScorePassagesInput {
+  goal: string;
+  focus?: string;
+  /** Última query buscada, se houver. */
+  query?: string;
+  /** Trechos candidatos da página (pré-selecionados pelas regras). */
+  passages: readonly string[];
+}
+
+export interface ScorePassagesOutput {
+  /** Nota de relevância (0..1) de cada trecho, na mesma ordem do input. */
+  scores: number[];
+  /** Custo da chamada em USD. */
+  costUsd: number;
+}
+
 export interface Classifier {
   /** Identificação exibida nos details (ex.: `openrouter/typesafe/jev-1.14`). */
   readonly name: string;
-  /** Uma chamada por busca. Rejeita em falha (o núcleo cai nas regras). */
+  /**
+   * Uma chamada por busca (e uma por leitura de página fora das buscas).
+   * Rejeita em falha (o núcleo cai nas regras).
+   */
   judgeResults(input: JudgeResultsInput, signal?: AbortSignal): Promise<JudgeResultsOutput>;
+  /**
+   * Extração focada: nota de relevância dos trechos contra Goal + Focus + query.
+   * Opcional; ausente ou rejeitando → Extração focada por regras.
+   */
+  scorePassages?(input: ScorePassagesInput, signal?: AbortSignal): Promise<ScorePassagesOutput>;
 }
 
 /** Escolha persistida em /web-search. */
@@ -69,6 +93,9 @@ export const CLASSIFIER_PREFERENCE: readonly (readonly [string, string])[] = [
 
 /** Chaves das perguntas do resultado `i` no ClassifierContext (convenção do adaptador Pi). */
 export const questionKeys = (i: number) => ({ offTopic: `r${i}_offtopic`, level: `r${i}_level`, category: `r${i}_category` });
+
+/** Chave da pergunta de relevância do trecho `i` (adaptador Pi). */
+export const passageKey = (i: number) => `p${i}_relevant`;
 
 /**
  * Rótulos de choice das Categorias (sem acento/espaço) → Categoria original.
@@ -156,6 +183,27 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
         };
       });
       return { judgements, costUsd: response.usage?.cost.total ?? 0 };
+    },
+    async scorePassages(input, signal) {
+      const questions: Record<string, unknown> = {};
+      input.passages.forEach((_, i) => {
+        questions[passageKey(i)] = {
+          type: "bool",
+          instructions: `passages[${i}] traz informação útil para responder o goal (considerando focus e query)?`,
+          criteria: { true: "relevante: responde ou sustenta o goal", false: "irrelevante: navegação, assunto lateral ou genérico" },
+        };
+      });
+      const state = {
+        goal: input.goal, ...(input.focus ? { focus: input.focus } : {}), ...(input.query ? { query: input.query } : {}),
+        passages: [...input.passages],
+      };
+      const response = await registry.classify(model, { state, questions } as never, { signal });
+      if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
+      const scores = input.passages.map((_, i) => {
+        const answer = response.answers[passageKey(i)];
+        return answer?.type === "bool" ? answer.probability : 0;
+      });
+      return { scores, costUsd: response.usage?.cost.total ?? 0 };
     },
   };
 }
