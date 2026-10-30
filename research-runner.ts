@@ -19,7 +19,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { homedir } from "node:os";
-import type { SearchResponse, WebSearchProvider } from "./search-types.ts";
+import type { WebSearchProvider } from "./search-types.ts";
+import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, type HttpFetch } from "./fetch-url.ts";
 import { correctionMessage, ReadSources, removeUnreadCitations, unreadCitations } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
@@ -32,6 +33,8 @@ export interface RunResearchOptions {
   depth: ResearchDepth;
   /** Providers de busca disponíveis, em ordem de preferência. */
   providers: readonly WebSearchProvider[];
+  /** Modo de busca: `agregada` (padrão, todos em paralelo) ou `econômica` (um por vez). */
+  searchMode?: SearchMode;
   /** Porta de HTTP para leitura de páginas (padrão: fetch global). */
   fetch?: HttpFetch;
   modelRegistry: ModelRegistry;
@@ -75,10 +78,36 @@ function textOfLastAssistant(messages: readonly any[]): string {
   return message?.content?.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n").trim() ?? "";
 }
 
-async function search(providers: readonly WebSearchProvider[], query: string, signal?: AbortSignal): Promise<SearchResponse> {
-  const provider = providers[0];
-  if (!provider) throw new Error("Nenhum Provider de busca disponível.");
-  return provider.search(query, { timeoutMs: 60_000 }, signal);
+/** Contadores do Funil, acumulados nas buscas de uma Research. */
+interface Funnel {
+  found: number;
+  unique: number;
+  duplicates: number;
+}
+
+interface ResearchRun {
+  options: RunResearchOptions;
+  funnel: Funnel;
+  searchWarnings: string[];
+}
+
+const label = (result: AggregatedResult) => `${result.title} [${result.providers.join("+")}]`;
+
+async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
+  const { options, funnel } = run;
+  const response = await aggregateSearch(options.providers, query, options.searchMode ?? "agregada", signal);
+  funnel.found += response.found;
+  funnel.unique += response.results.length;
+  funnel.duplicates = funnel.found - funnel.unique;
+  run.searchWarnings.push(...response.warnings);
+  options.onProgress?.(`${funnel.found} resultados → ${funnel.unique} únicos`);
+  return response;
+}
+
+function funnelDetails(run: ResearchRun) {
+  const details: Record<string, unknown> = { searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel } };
+  if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
+  return details;
 }
 
 interface SubagentOutcome {
@@ -87,7 +116,8 @@ interface SubagentOutcome {
   removedCitations: string[];
 }
 
-async function runSubagent(options: RunResearchOptions, model: Model): Promise<SubagentOutcome> {
+async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutcome> {
+  const { options } = run;
   const { depth, signal } = options;
   const sources = new ReadSources();
   const budget = createResearchBudget(depth);
@@ -106,9 +136,11 @@ async function runSubagent(options: RunResearchOptions, model: Model): Promise<S
     async execute(_id, params, toolSignal) {
       if (!budget.consumeSearch()) return { content: [{ type: "text", text: "Orçamento de buscas esgotado. Produza a síntese final agora." }] };
       options.onProgress?.(`Buscando: ${params.query}`);
-      const result = await search(options.providers, params.query, toolSignal);
-      const text = result.results.map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.summary}`).join("\n\n") || "Sem resultados.";
-      return { content: [{ type: "text", text }] };
+      const result = await search(run, params.query, toolSignal);
+      const list = result.results.map((r, i) => `${i + 1}. ${label(r)}\n${r.url}\n${r.summary}`).join("\n\n")
+        || result.rawText || "Sem resultados.";
+      const warnings = result.warnings.map((w) => `Aviso: ${w}`).join("\n");
+      return { content: [{ type: "text", text: warnings ? `${warnings}\n\n${list}` : list }] };
     },
   };
   const fetchUrlTool: ToolDefinition<any> = {
@@ -178,18 +210,25 @@ async function runSubagent(options: RunResearchOptions, model: Model): Promise<S
   }
 }
 
-async function rawFallback(options: RunResearchOptions, error: unknown, researchModel: string | undefined): Promise<ResearchResult> {
+async function rawFallback(run: ResearchRun, error: unknown, researchModel: string | undefined): Promise<ResearchResult> {
+  const { options } = run;
   options.onProgress?.("Subagente falhou; buscando fallback sem síntese…");
-  const response = await search(options.providers, options.goal, options.signal);
-  const meta = response.telemetry.providerMeta as Record<string, unknown> | undefined;
+  // Contadores do Fallback cru descrevem só a busca do fallback.
+  run.funnel = { found: 0, unique: 0, duplicates: 0 };
+  run.searchWarnings = [];
+  const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
-    ? response.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.summary}`).join("\n\n")
-    : (meta?.rawAssistantText as string) || "research: sem resultados.";
+    ? response.results.map((r, i) => `${i + 1}. ${label(r)}\n   ${r.url}\n   ${r.summary}`).join("\n\n")
+    : response.rawText || "research: sem resultados.";
+  const warnings = response.warnings.map((w) => `[Aviso: ${w}]\n`).join("");
   const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
   const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
   return {
-    content: [{ type: "text", text: `[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n\n${truncation.content}${notice}` }],
-    details: { provider: response.provider, query: options.goal, resultCount: response.results.length, fallback: true, researchModel },
+    content: [{ type: "text", text: `[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n${warnings}\n${truncation.content}${notice}` }],
+    details: {
+      provider: response.providers.join("+"), query: options.goal, resultCount: response.results.length,
+      fallback: true, researchModel, ...funnelDetails(run),
+    },
   };
 }
 
@@ -200,9 +239,10 @@ const UNVERIFIED_NOTICE =
 export async function runResearch(options: RunResearchOptions): Promise<ResearchResult> {
   const model = chooseResearchModel(options.modelRegistry, options.modelRef, options.parentModel);
   const researchModel = model ? `${model.provider}/${model.id}` : undefined;
+  const run: ResearchRun = { options, funnel: { found: 0, unique: 0, duplicates: 0 }, searchWarnings: [] };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
-    const outcome = await runSubagent(options, model);
+    const outcome = await runSubagent(run, model);
     const unverified = outcome.sourcesRead === 0;
     const text = unverified ? `${UNVERIFIED_NOTICE}\n\n${outcome.text}` : outcome.text;
     return {
@@ -211,10 +251,11 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
         depth: options.depth, synthesized: true, researchModel,
         sourcesRead: outcome.sourcesRead, removedCitations: outcome.removedCitations,
         ...(unverified ? { unverified: true } : {}),
+        ...funnelDetails(run),
       },
     };
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    return rawFallback(options, error, researchModel);
+    return rawFallback(run, error, researchModel);
   }
 }

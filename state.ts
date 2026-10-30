@@ -8,6 +8,8 @@
  * Formato:
  *   {
  *     activeProvider?: "tavily" | "exa" | "goose",
+ *     researchModel?: { provider, id },
+ *     searchMode?: "agregada" | "econômica",
  *     keys?: { tavily?: string, exa?: string }
  *   }
  *
@@ -27,6 +29,8 @@ export type ProviderName = "tavily" | "exa" | "goose";
 export interface WebSearchState {
   activeProvider?: ProviderName;
   researchModel?: { provider: string; id: string };
+  /** Modo de busca: `agregada` (padrão) ou `econômica`. */
+  searchMode?: "agregada" | "econômica";
   keys?: {
     tavily?: string;
     exa?: string;
@@ -100,6 +104,7 @@ export function loadState(filePath: string): WebSearchState {
       ...(researchModel && typeof researchModel.provider === "string" && typeof researchModel.id === "string"
         ? { researchModel }
         : {}),
+      ...(parsed.searchMode === "agregada" || parsed.searchMode === "econômica" ? { searchMode: parsed.searchMode } : {}),
       keys: parsed.keys ?? {},
     };
   } catch {

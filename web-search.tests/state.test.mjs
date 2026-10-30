@@ -178,3 +178,11 @@ test("state: resolveKey — undefined quando não há chave em nenhum lugar", ()
     else delete process.env.EXA_API_KEY;
   }
 });
+
+test("state: searchMode é persistido e valores inválidos são ignorados", () => {
+  const path = join(tmpDir, "state.json");
+  saveState(path, { searchMode: "econômica", keys: {} });
+  assert.equal(loadState(path).searchMode, "econômica");
+  saveState(path, { searchMode: "turbo", keys: {} });
+  assert.equal("searchMode" in loadState(path), false);
+});

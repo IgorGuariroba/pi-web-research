@@ -7,7 +7,8 @@
  * (research-runner.ts), que executa o subagente e o Fallback cru.
  *
  * Arquitetura:
- *   research(goal, focus, depth) → núcleo de Research → subagente → web_search(query) → WebSearchProvider
+ *   research(goal, focus, depth) → núcleo de Research → subagente → web_search(query)
+ *     → Busca agregada (aggregate-search.ts: agregada | econômica) → WebSearchProvider[]
  *     ├─ TavilyProvider    (HTTP, retry/backoff via HttpSearchProvider base)
  *     ├─ ExaProvider       (HTTP, retry/backoff via HttpSearchProvider base)
  *     └─ GooseBuiltinProvider (CLI via goose-adapter.ts)
@@ -35,7 +36,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
 import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState } from "./state.ts";
-import { resolveActiveProvider } from "./resolve-provider.ts";
+import { resolveSearchProviders } from "./resolve-provider.ts";
+import type { SearchMode } from "./aggregate-search.ts";
 
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
@@ -53,13 +55,12 @@ export default function webSearchExtension(pi: ExtensionAPI) {
   const state = loadState(statePath);
   let activeProviderOverride: string | undefined = state.activeProvider;
 
-  // Função de resolução: chamada uma vez por search().
-  // Regra: troca de provider no meio de uma busca não afeta a busca em
-  // andamento — só vale da próxima chamada search().
-  const resolveProvider = (): WebSearchProvider => {
+  // Providers da Busca agregada, resolvidos a cada chamada de research:
+  // todos com chave (o ativo primeiro); Goose só sem nenhuma chave.
+  const resolveProviders = (): WebSearchProvider[] => {
     const tavilyKey = resolveKeyFromState(statePath, "tavily");
     const exaKey = resolveKeyFromState(statePath, "exa");
-    return resolveActiveProvider(activeProviderOverride, tavilyKey, exaKey, pi.exec);
+    return resolveSearchProviders(activeProviderOverride, tavilyKey, exaKey, pi.exec);
   };
 
   // --------------------------------------------------------------------------- //
@@ -105,6 +106,11 @@ export default function webSearchExtension(pi: ExtensionAPI) {
             exaKey ? "chave configurada" : "sem chave",
           ].filter(Boolean).join(" · "),
         },
+        {
+          value: "mode",
+          label: "Modo de busca",
+          description: `atual: ${loadState(statePath).searchMode ?? "agregada"}`,
+        },
       ];
 
       const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
@@ -135,6 +141,21 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       });
 
       if (!selected) return; // cancelou
+
+      if (selected === "mode") {
+        const options = [
+          "agregada — todos os Providers com chave em paralelo (padrão)",
+          "econômica — um Provider por vez; o próximo só em erro ou vazio",
+        ];
+        const choice = await ctx.ui.select("Modo de busca", options);
+        if (!choice) return;
+        const mode: SearchMode = choice.startsWith("econômica") ? "econômica" : "agregada";
+        const latest = loadState(statePath);
+        latest.searchMode = mode;
+        saveState(statePath, latest);
+        ctx.ui.notify(`Modo de busca: ${mode} ✓`, "info");
+        return;
+      }
 
       const providerName = selected;
       let apiKey = providerName === "tavily" ? tavilyKey : exaKey;
@@ -256,10 +277,10 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       const state = loadState(statePath);
       return runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick",
-        providers: [resolveProvider()],
+        providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
         cwd: ctx.cwd, signal,
-        onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }] }),
+        onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),
       });
     },
   });
