@@ -33,10 +33,10 @@ _Avoid_: resultados, dump
 Síntese que terminou sem nenhuma Fonte lida; é devolvida mesmo assim, com aviso explícito de que se apoia apenas em resultados de busca.
 
 **Fallback cru**:
-Resultado degradado devolvido quando o subagente falha: resultados da Busca agregada, sem duplicatas e ordenados por Nível de fonte, marcados como "sem síntese".
+Resultado degradado devolvido quando o subagente falha: resultados da Busca agregada, sem duplicatas e ordenados por Nível de fonte (com Critério ativo: Critério → Nível de fonte), marcados como "sem síntese".
 
 **Provider**:
-Backend de busca do SearchEngine (Tavily, Exa ou Goose), resolvido dinamicamente a cada busca.
+Backend de busca (Tavily, Exa ou Goose). A lista de Providers disponíveis é resolvida a cada chamada de research e consultada pela Busca agregada.
 
 **Busca agregada**:
 Uma busca do subagente consultada em todos os Providers com chave ao mesmo tempo; os resultados viram uma lista única. Goose só entra quando nenhum Provider tem chave.
