@@ -18,7 +18,7 @@
  *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
  *   - classifier.ts         Classificador (Fora do tema + Nível) sobre o model registry do Pi.
  *   - state.ts              storage seguro (state.json, 0600).
- *   - resolve-provider.ts   lógica de resolução do provider ativo.
+ *   - resolve-provider.ts   resolução da lista de Providers da Busca agregada.
  *   - tavily-provider.ts    Tavily HTTP provider.
  *   - exa-provider.ts       Exa HTTP provider.
  *   - goose-provider.ts     Goose CLI provider.
@@ -55,7 +55,6 @@ const parseBlockedDomains = (typed: string) => [...new Set(
 
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
-export { resolveActiveProvider } from "./resolve-provider.ts";
 
 // --------------------------------------------------------------------------- //
 // Extension

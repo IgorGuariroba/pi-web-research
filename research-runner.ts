@@ -20,6 +20,7 @@ import {
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
+import { canonicalUrl } from "./canonical-url.ts";
 import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
@@ -29,7 +30,7 @@ import {
 import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
 import {
-  correctionMessage, declareGap, labelCitations, readsByCategory, ReadSources, removeUnreadCitations, sourceKey, unreadCitations, type SourceLabel,
+  correctionMessage, declareGap, labelCitations, readsByCategory, ReadSources, removeUnreadCitations, unreadCitations, type SourceLabel,
 } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
@@ -337,7 +338,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const seen = new Map<string, SourceLabel>();
   /** Rótulo da Fonte lida; undefined = página Fora do tema (descartada). */
   const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel | undefined> => {
-    const known = seen.get(sourceKey(requested)) ?? seen.get(sourceKey(final));
+    const known = seen.get(canonicalUrl(requested)) ?? seen.get(canonicalUrl(final));
     if (known) return known;
     // Página fora das buscas: classificada na leitura; sem classificador (ou em
     // falha), Nível por regras e Categoria `outros` com Critério ativo.
@@ -364,7 +365,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       queries.push(params.query);
       const result = await search(run, params.query, toolSignal);
       for (const item of result.results) {
-        seen.set(sourceKey(item.url), item.category ? { level: item.level, category: item.category } : { level: item.level });
+        seen.set(canonicalUrl(item.url), item.category ? { level: item.level, category: item.category } : { level: item.level });
       }
       const list = result.results.map((r, i) => `${i + 1}. ${label(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
         || result.rawText || "Sem resultados.";

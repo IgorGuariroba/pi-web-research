@@ -5,9 +5,6 @@
 import { canonicalUrl } from "./canonical-url.ts";
 import type { Criterion } from "./criteria.ts";
 
-/** Chave de comparação de Fonte lida: a URL canônica. */
-export const sourceKey = canonicalUrl;
-
 /** Classificação de uma Fonte lida: Nível e, com Critério ativo, Categoria. */
 export interface SourceLabel {
   level: string;
@@ -20,8 +17,8 @@ export class ReadSources {
   #reads: SourceLabel[] = [];
 
   add(requested: string, final: string | undefined, label: SourceLabel): void {
-    const key = sourceKey(requested);
-    const finalKey = final ? sourceKey(final) : key;
+    const key = canonicalUrl(requested);
+    const finalKey = final ? canonicalUrl(final) : key;
     if (this.#byKey.has(key) || this.#byKey.has(finalKey)) return;
     this.#reads.push(label);
     this.#byKey.set(key, label);
@@ -29,11 +26,11 @@ export class ReadSources {
   }
 
   has(url: string): boolean {
-    return this.#byKey.has(sourceKey(url));
+    return this.#byKey.has(canonicalUrl(url));
   }
 
   label(url: string): SourceLabel | undefined {
-    return this.#byKey.get(sourceKey(url));
+    return this.#byKey.get(canonicalUrl(url));
   }
 
   /** Classificação de cada Fonte lida (uma por página). */

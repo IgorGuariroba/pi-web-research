@@ -12,8 +12,6 @@
 import type { SearchResult, WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
 
-export { canonicalUrl };
-
 export type SearchMode = "agregada" | "econômica";
 
 export interface AggregatedResult extends SearchResult {
