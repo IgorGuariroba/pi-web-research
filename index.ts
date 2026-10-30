@@ -16,6 +16,7 @@
  * Módulos:
  *   - search-types.ts       contrato público (neutro quanto a provider).
  *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
+ *   - classifier.ts         Classificador (Fora do tema + Nível) sobre o model registry do Pi.
  *   - state.ts              storage seguro (state.json, 0600).
  *   - resolve-provider.ts   lógica de resolução do provider ativo.
  *   - tavily-provider.ts    Tavily HTTP provider.
@@ -35,9 +36,12 @@ import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
-import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState } from "./state.ts";
+import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
 import type { SearchMode } from "./aggregate-search.ts";
+
+const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
+  choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
 
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
@@ -111,6 +115,11 @@ export default function webSearchExtension(pi: ExtensionAPI) {
           label: "Modo de busca",
           description: `atual: ${loadState(statePath).searchMode ?? "agregada"}`,
         },
+        {
+          value: "classifier",
+          label: "Classificador",
+          description: `atual: ${describeClassifierChoice(loadState(statePath).classifier)}`,
+        },
       ];
 
       const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
@@ -154,6 +163,21 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         latest.searchMode = mode;
         saveState(statePath, latest);
         ctx.ui.notify(`Modo de busca: ${mode} ✓`, "info");
+        return;
+      }
+
+      if (selected === "classifier") {
+        const available = await ctx.modelRegistry.getAvailableOfType("classifier");
+        const AUTO = "automático — detecta pela lista de preferência (Jev, depois Clef)";
+        const NONE = "nenhum (só regras)";
+        const options = [AUTO, NONE, ...available.map((m) => `${m.provider}/${m.id}`)];
+        const choice = await ctx.ui.select("Classificador", options);
+        if (!choice) return;
+        const picked = available.find((m) => `${m.provider}/${m.id}` === choice);
+        const latest = loadState(statePath);
+        latest.classifier = choice === AUTO ? "auto" : choice === NONE ? "none" : { provider: picked!.provider, id: picked!.id };
+        saveState(statePath, latest);
+        ctx.ui.notify(`Classificador: ${describeClassifierChoice(latest.classifier)} ✓`, "info");
         return;
       }
 
@@ -278,7 +302,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       return runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick",
         providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
-        blockedDomains: state.blockedDomains,
+        blockedDomains: state.blockedDomains, classifier: state.classifier ?? "auto",
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
         cwd: ctx.cwd, signal,
         onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),

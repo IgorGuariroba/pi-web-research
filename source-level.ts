@@ -105,8 +105,12 @@ export function curateByRules(
 ): CuratedResults {
   const kept = results.filter((result) => !isSpam(result.url, blockedDomains));
   const leveled = kept.map((result) => ({ ...result, level: sourceLevel(result.url, terms) }));
-  leveled.sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.providers.length - a.providers.length);
-  return { results: leveled, spam: results.length - kept.length };
+  return { results: sortByLevel(leveled), spam: results.length - kept.length };
+}
+
+/** Ordena por Nível → Concordância (estável, in place). */
+export function sortByLevel<T extends LeveledResult>(results: T[]): T[] {
+  return results.sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.providers.length - a.providers.length);
 }
 
 const SNIPPET_MAX = 280;

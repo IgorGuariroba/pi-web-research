@@ -194,3 +194,13 @@ test("state: blockedDomains é persistido; entradas não-string são ignoradas",
   saveState(path, { blockedDomains: "x", keys: {} });
   assert.equal("blockedDomains" in loadState(path), false);
 });
+
+test("state: escolha do classificador é persistida (auto | none | {provider,id}); valor inválido é ignorado", () => {
+  const path = join(tmpDir, "state.json");
+  for (const classifier of ["auto", "none", { provider: "openrouter", id: "typesafe/jev-1.14" }]) {
+    saveState(path, { keys: {}, classifier });
+    assert.deepEqual(loadState(path).classifier, classifier);
+  }
+  writeFileSync(path, JSON.stringify({ keys: {}, classifier: { provider: 1 } }));
+  assert.equal(loadState(path).classifier, undefined);
+});

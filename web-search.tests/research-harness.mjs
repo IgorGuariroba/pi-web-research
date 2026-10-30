@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "../research-runner.ts";
+import { questionKeys } from "../classifier.ts";
 
 // --------------------------------------------------------------------------- //
 // Servidor falso OpenAI-compatible
@@ -111,7 +112,7 @@ export async function startFakeLLM(script) {
  * models: ids dos modelos expostos pelo provider "fake-llm" (todos com chave).
  * Devolve { modelRegistry, model(id), cwd, agentDir, cleanup }.
  */
-export async function createModelEnv({ baseUrl, models = ["fake-model"], provider = "fake-llm" }) {
+export async function createModelEnv({ baseUrl, models = ["fake-model"], provider = "fake-llm", classifiers = [] }) {
   const cwd = mkdtempSync(join(tmpdir(), "research-cwd-"));
   const agentDir = mkdtempSync(join(tmpdir(), "research-agent-"));
   writeFileSync(join(agentDir, "auth.json"), "{}\n");
@@ -121,6 +122,18 @@ export async function createModelEnv({ baseUrl, models = ["fake-model"], provide
   }));
   const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
   runtime.registerProvider(provider, { name: "Fake LLM", baseUrl, apiKey: "sk-fake", api: "openai-completions", authHeader: true, models: defs });
+  // Classificadores falsos: um provider por nome (sobrescreve o do catálogo neste runtime isolado).
+  const byProvider = new Map();
+  for (const c of classifiers) byProvider.set(c.provider, [...(byProvider.get(c.provider) ?? []), c]);
+  for (const [name, list] of byProvider) {
+    const api = `fake-clf-${name}`;
+    runtime.registerProvider(name, {
+      apiKey: "k", baseUrl: "http://127.0.0.1:1",
+      models: list.map((c) => ({ type: "classifier", id: c.id, name: c.id, api, input: ["text"],
+        cost: { input: 0.04, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000 })),
+      classifiers: { [api]: { classify: async (m, ctx) => list.find((c) => c.id === m.id).classify(m, ctx) } },
+    });
+  }
   await runtime.refresh({ allowNetwork: false });
   const modelRegistry = new ModelRegistry(runtime);
   return {
@@ -164,6 +177,63 @@ export function failingProvider(name, message = `${name} indisponível`) {
 export const emptyProvider = (name) => fakeProvider(name, []);
 
 // --------------------------------------------------------------------------- //
+// Classificadores falsos
+// --------------------------------------------------------------------------- //
+
+/**
+ * Classificador falso injetado direto no núcleo (interface Classifier, classifier.ts).
+ * judge: (result, input) => { offTopic?: number, level?: "oficial"|"docs"|"blog"|"fórum"|"spam" }
+ *        ou objeto { "<url>": { offTopic, level } }. Campos omitidos: offTopic 0, level "blog".
+ * Opções: name (padrão "fake/classifier"), costUsd por chamada (padrão 0.001), fail (mensagem → rejeita).
+ * `.calls` registra os inputs ({ goal, focus, query, results }) de cada chamada.
+ */
+export function fakeClassifier(judge = {}, { name = "fake/classifier", costUsd = 0.001, fail } = {}) {
+  const calls = [];
+  const judgeOne = typeof judge === "function" ? judge : (result) => judge[result.url] ?? {};
+  return {
+    name, calls,
+    async judgeResults(input) {
+      calls.push(input);
+      if (fail) throw new Error(fail);
+      const judgements = input.results.map((result) => ({ offTopic: 0, level: "blog", ...judgeOne(result, input) }));
+      return { judgements, costUsd };
+    },
+  };
+}
+
+/**
+ * Modelo classificador falso para o ModelRegistry (fronteira real do Pi).
+ * judge: igual a fakeClassifier. Responde às perguntas montadas pelo adaptador
+ * (chaves de questionKeys(i) em classifier.ts). `.calls` = ClassifierContext recebidos.
+ * Uso: setupResearch({ registryClassifiers: [registryClassifier("openrouter", "typesafe/jev-1.14", judge)], classifier: "auto" })
+ */
+export function registryClassifier(provider, id, judge = {}, { costUsd = 0.000004, stopReason = "stop" } = {}) {
+  const calls = [];
+  const judgeOne = typeof judge === "function" ? judge : (result) => judge[result.url] ?? {};
+  return {
+    provider, id, calls,
+    async classify(model, ctx) {
+      calls.push(ctx);
+      const answers = {};
+      ctx.state.results.forEach((result, i) => {
+        const { offTopic = 0, level = "blog" } = judgeOne(result);
+        const keys = questionKeys(i);
+        answers[keys.offTopic] = { type: "bool", probability: offTopic };
+        const label = level === "fórum" ? "forum" : level;
+        answers[keys.level] = { type: "choice", choice: label, probabilities: { [label]: 1 }, confidence: 1 };
+      });
+      return {
+        api: model.api, provider: model.provider, model: model.id, stopReason, timestamp: Date.now(),
+        ...(stopReason === "stop" ? {} : { errorMessage: "falha falsa" }),
+        answers,
+        usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100,
+          cost: { input: costUsd, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd } },
+      };
+    },
+  };
+}
+
+// --------------------------------------------------------------------------- //
 // Servidor HTTP local de páginas (porta de fetch)
 // --------------------------------------------------------------------------- //
 
@@ -202,13 +272,19 @@ export async function startPageServer(routes = {}) {
 // --------------------------------------------------------------------------- //
 
 /**
- * setupResearch({ script, providers, pages, models, modelRef, parentModelId })
+ * setupResearch({ script, providers, pages, models, modelRef, parentModelId, classifier, registryClassifiers })
+ * classifier: Classifier (ex. fakeClassifier) | "auto" | "none" (padrão: "none", para não
+ *   detectar classificadores reais do ambiente) | { provider, id }.
+ * registryClassifiers: modelos classificadores falsos registrados no ModelRegistry
+ *   (ver registryClassifier) — exercitam a detecção automática e o adaptador do Pi.
  * → { run(params, extra?), llm, pages, env, progress, cleanup }.
  * run chama o núcleo real (runResearch) com as dependências falsas.
  */
-export async function setupResearch({ script, providers = [], pages = {}, models, modelRef, parentModelId } = {}) {
+export async function setupResearch({
+  script, providers = [], pages = {}, models, modelRef, parentModelId, classifier = "none", registryClassifiers,
+} = {}) {
   const llm = await startFakeLLM(script);
-  const env = await createModelEnv({ baseUrl: llm.baseUrl, models });
+  const env = await createModelEnv({ baseUrl: llm.baseUrl, models, classifiers: registryClassifiers });
   const pageServer = await startPageServer(pages);
   const progress = [];
   return {
@@ -218,6 +294,7 @@ export async function setupResearch({ script, providers = [], pages = {}, models
       providers, fetch: pageServer.fetch,
       modelRegistry: env.modelRegistry,
       modelRef,
+      classifier,
       parentModel: parentModelId ? env.model(parentModelId) : undefined,
       cwd: env.cwd, agentDir: env.agentDir,
       onProgress: (m) => progress.push(m),
