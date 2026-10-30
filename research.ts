@@ -1,3 +1,5 @@
+import type { Criterion } from "./criteria.ts";
+
 export type ResearchDepth = "quick" | "deep";
 
 const LIMITS = {
@@ -9,13 +11,25 @@ export function getResearchLimits(depth: ResearchDepth) {
   return LIMITS[depth];
 }
 
-export function buildResearchPrompt(goal: string, focus: string | undefined, depth: ResearchDepth): string {
+function criteriaSection(criteria: readonly Criterion[]): string[] {
+  return [
+    "Critério do agente pai (Categorias de fonte, em ordem de prioridade):",
+    ...criteria.map((c, i) => `${i + 1}. ${c.category}: ${c.description}${c.discard ? " (descartar)" : ""}`),
+    "Busque ativamente cada Categoria não descartada com queries próprias (ex.: termos que esse tipo de fonte usa), em vez de repetir as palavras do objetivo.",
+    "Os resultados de busca vêm rotulados [categoria · nível · providers]; priorize ler as Categorias de maior prioridade.",
+  ];
+}
+
+export function buildResearchPrompt(
+  goal: string, focus: string | undefined, depth: ResearchDepth, criteria?: readonly Criterion[],
+): string {
   const limits = LIMITS[depth];
   return [
     "Você é um subagente de pesquisa isolado. Investigue usando somente web_search e fetch_url.",
     `Objetivo: ${goal}`,
     focus ? `Foco do agente pai: ${focus}` : "Foco: responda apenas o necessário para o objetivo.",
     `Profundidade: ${depth}. Faça no máximo ${limits.searches} buscas e ${limits.fetches} leituras de página.`,
+    ...(criteria?.length ? criteriaSection(criteria) : []),
     "Prefira fontes primárias e oficiais. Cruze fontes quando houver conflito.",
     "Sua resposta final deve ser uma síntese curta e diretamente útil, sem narrar o processo.",
     "Termine com uma seção 'Fontes' contendo somente as URLs efetivamente usadas.",
