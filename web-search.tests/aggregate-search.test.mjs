@@ -21,11 +21,11 @@ test("agregada: dois Providers sobrepostos viram lista única com Concordância"
     const result = await h.run({ goal: "G" });
     const [seen] = h.llm.toolResults();
     assert.equal(seen.match(/https:\/\/a\.test\/doc/g).length, 1);
-    assert.match(seen, /Doc A \[tavily\+exa\]\nhttps:\/\/a\.test\/doc\nresumo bem mais longo do exa/);
-    assert.match(seen, /Só Tavily \[tavily\]/);
-    assert.match(seen, /Só Exa \[exa\]/);
-    assert.deepEqual(result.details.funnel, { found: 4, unique: 3, duplicates: 1 });
-    assert.equal(h.progress.includes("4 resultados → 3 únicos"), true);
+    assert.match(seen, /Doc A \[blog · tavily\+exa\]\nhttps:\/\/a\.test\/doc\nresumo bem mais longo do exa/);
+    assert.match(seen, /Só Tavily \[blog · tavily\]/);
+    assert.match(seen, /Só Exa \[blog · exa\]/);
+    assert.deepEqual(result.details.funnel, { found: 4, unique: 3, duplicates: 1, spam: 0 });
+    assert.equal(h.progress.includes("4 resultados → 3 únicos → 3 após descarte (0 spam)"), true);
   }));
 
 test("agregada: variações de URL (www, fragmento, utm, ref, fbclid, barra, http/https) são unificadas", () =>
@@ -42,8 +42,8 @@ test("agregada: variações de URL (www, fragmento, utm, ref, fbclid, barra, htt
     const result = await h.run({ goal: "G" });
     const [seen] = h.llm.toolResults();
     assert.equal((seen.match(/^\d+\. /gm) ?? []).length, 2);
-    assert.match(seen, /\[tavily\+exa\]/);
-    assert.deepEqual(result.details.funnel, { found: 4, unique: 2, duplicates: 2 });
+    assert.match(seen, /\[blog · tavily\+exa\]/);
+    assert.deepEqual(result.details.funnel, { found: 4, unique: 2, duplicates: 2, spam: 0 });
   }));
 
 test("agregada: um Provider falhando entrega o outro com aviso", () =>
@@ -53,7 +53,7 @@ test("agregada: um Provider falhando entrega o outro com aviso", () =>
   }, async (h) => {
     const result = await h.run({ goal: "G" });
     const [seen] = h.llm.toolResults();
-    assert.match(seen, /E1 \[exa\]/);
+    assert.match(seen, /E1 \[blog · exa\]/);
     assert.match(seen, /Aviso: tavily falhou: tavily caiu/);
     assert.equal(result.details.synthesized, true);
     assert.deepEqual(result.details.searchWarnings, ["tavily falhou: tavily caiu"]);
@@ -109,7 +109,7 @@ test("econômica: um Provider por vez, passando ao próximo só em erro ou vazio
     await h.run({ goal: "G" }, { searchMode: "econômica" });
     assert.deepEqual(tavily.calls, ["q"]);
     assert.deepEqual(exa.calls, []);
-    assert.match(h.llm.toolResults()[0], /T1 \[tavily\]/);
+    assert.match(h.llm.toolResults()[0], /T1 \[blog · tavily\]/);
   });
 
   const broken = failingProvider("tavily", "caiu");
@@ -120,7 +120,7 @@ test("econômica: um Provider por vez, passando ao próximo só em erro ou vazio
     assert.deepEqual(broken.calls, ["q"]);
     assert.deepEqual(empty.calls, ["q"]);
     assert.deepEqual(third.calls, ["q"]);
-    assert.match(h.llm.toolResults()[0], /O1 \[outro\]/);
+    assert.match(h.llm.toolResults()[0], /O1 \[blog · outro\]/);
     assert.equal(result.details.searchMode, "econômica");
   });
 });
@@ -137,10 +137,10 @@ test("Fallback cru usa a Busca agregada sem duplicatas", () =>
     const text = textOf(result);
     assert.match(text, /^\[Fallback sem síntese/);
     assert.equal((text.match(/a\.test\/doc/g) ?? []).length, 1);
-    assert.match(text, /Doc A \[tavily\+exa\]\n   https:\/\/a\.test\/doc\n   resumo mais longo/);
+    assert.match(text, /Doc A \[blog · tavily\+exa\]\n   https:\/\/a\.test\/doc\n   resumo mais longo/);
     assert.equal(result.details.fallback, true);
     assert.equal(result.details.resultCount, 3);
     assert.equal(result.details.provider, "tavily+exa");
-    assert.deepEqual(result.details.funnel, { found: 4, unique: 3, duplicates: 1 });
-    assert.equal(h.progress.includes("4 resultados → 3 únicos"), true);
+    assert.deepEqual(result.details.funnel, { found: 4, unique: 3, duplicates: 1, spam: 0 });
+    assert.equal(h.progress.includes("4 resultados → 3 únicos → 3 após descarte (0 spam)"), true);
   }));

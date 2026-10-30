@@ -10,6 +10,7 @@
  *     activeProvider?: "tavily" | "exa" | "goose",
  *     researchModel?: { provider, id },
  *     searchMode?: "agregada" | "econômica",
+ *     blockedDomains?: string[],
  *     keys?: { tavily?: string, exa?: string }
  *   }
  *
@@ -31,6 +32,8 @@ export interface WebSearchState {
   researchModel?: { provider: string; id: string };
   /** Modo de busca: `agregada` (padrão) ou `econômica`. */
   searchMode?: "agregada" | "econômica";
+  /** Domínios cortados como spam, além da lista fixa. */
+  blockedDomains?: string[];
   keys?: {
     tavily?: string;
     exa?: string;
@@ -105,6 +108,9 @@ export function loadState(filePath: string): WebSearchState {
         ? { researchModel }
         : {}),
       ...(parsed.searchMode === "agregada" || parsed.searchMode === "econômica" ? { searchMode: parsed.searchMode } : {}),
+      ...(Array.isArray(parsed.blockedDomains)
+        ? { blockedDomains: parsed.blockedDomains.filter((d): d is string => typeof d === "string") }
+        : {}),
       keys: parsed.keys ?? {},
     };
   } catch {

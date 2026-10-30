@@ -186,3 +186,11 @@ test("state: searchMode é persistido e valores inválidos são ignorados", () =
   saveState(path, { searchMode: "turbo", keys: {} });
   assert.equal("searchMode" in loadState(path), false);
 });
+
+test("state: blockedDomains é persistido; entradas não-string são ignoradas", () => {
+  const path = join(tmpDir, "state.json");
+  saveState(path, { blockedDomains: ["fazenda.test", 3, "spam.test"], keys: {} });
+  assert.deepEqual(loadState(path).blockedDomains, ["fazenda.test", "spam.test"]);
+  saveState(path, { blockedDomains: "x", keys: {} });
+  assert.equal("blockedDomains" in loadState(path), false);
+});
