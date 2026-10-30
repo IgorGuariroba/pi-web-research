@@ -134,6 +134,7 @@ for (const withCriteria of [true, false]) {
       assert.doesNotMatch(text, /forum\.algo\.test.*\[/);
       assert.equal(result.details.sourcesRead, 0);
       assert.deepEqual(result.details.removedCitations, [FORUM]);
+      assert.deepEqual(result.details.offTopicDiscarded, [{ url: FORUM, offTopic: 0.95 }]);
       if (withCriteria) assert.deepEqual(result.details.readsByCategory, { "relato-producao": 0, benchmark: 0 });
     } finally {
       await h.cleanup();

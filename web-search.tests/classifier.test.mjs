@@ -218,3 +218,27 @@ test("adaptador do Pi: cada pergunta mede o TEMA e cita o título/URL do própri
     });
   });
 });
+
+test("details listam os descartados por Fora do tema (url + probabilidade, até 20), fora do texto", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [
+      r("https://react.dev/learn", "Learn"),
+      ...Array.from({ length: 25 }, (_, i) => r(`https://off.test/${i}`, `Off ${i}`)),
+    ])],
+    classifier: fakeClassifier((result) => ({ offTopic: result.url.startsWith("https://off.test") ? 0.9 : 0.1 })),
+  }, async (h) => {
+    const result = await h.run({ goal: "React" });
+    assert.equal(result.details.funnel.offTopic, 25);
+    assert.equal(result.details.offTopicDiscarded.length, 20);
+    assert.deepEqual(result.details.offTopicDiscarded[0], { url: "https://off.test/0", offTopic: 0.9 });
+    assert.doesNotMatch(result.content.map((c) => c.text).join("\n"), /off\.test/);
+  }));
+
+test("sem descartes por Fora do tema, details não trazem a lista", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r("https://react.dev/learn", "Learn")])],
+    classifier: fakeClassifier(),
+  }, async (h) => {
+    const result = await h.run({ goal: "React" });
+    assert.equal(result.details.offTopicDiscarded, undefined);
+  }));

@@ -130,6 +130,21 @@ interface ResearchRun {
   criteria?: readonly Criterion[];
   /** Julgamentos de resultados/páginas que caíram nas regras por falha do classificador. */
   judgeFailures: number;
+  /** Amostra dos descartados por Fora do tema (auditoria/recalibração do limiar; só nos details). */
+  offTopicDiscarded: OffTopicDiscard[];
+}
+
+interface OffTopicDiscard {
+  url: string;
+  /** Probabilidade de Fora do tema dada pelo classificador. */
+  offTopic: number;
+}
+
+/** Máximo de descartados por Fora do tema listados nos details. */
+const OFF_TOPIC_SAMPLE = 20;
+
+function recordOffTopic(run: ResearchRun, url: string, offTopic: number) {
+  if (run.offTopicDiscarded.length < OFF_TOPIC_SAMPLE) run.offTopicDiscarded.push({ url, offTopic });
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -172,7 +187,10 @@ async function curateByClassifier(run: ResearchRun, classifier: Classifier, quer
     kept.forEach((result, i) => {
       const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
       const criterion = criteria?.find((c) => c.category === judgement.category);
-      if (judgement.offTopic > OFF_TOPIC_THRESHOLD) offTopic++;
+      if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
+        offTopic++;
+        recordOffTopic(run, result.url, judgement.offTopic);
+      }
       else if (judgement.level === "spam") spam++;
       else if (criterion?.discard) criteriaDiscarded++;
       else if (criteria) leveled.push({ ...result, level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY });
@@ -273,7 +291,10 @@ async function classifyRead(
     run.classifierCost += costUsd;
     const judgement = judgements[0];
     if (!judgement) return undefined;
-    if (judgement.offTopic > OFF_TOPIC_THRESHOLD) return { offTopic: judgement.offTopic };
+    if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
+      recordOffTopic(run, url, judgement.offTopic);
+      return { offTopic: judgement.offTopic };
+    }
     const level = judgement.level === "spam" ? sourceLevel(url, subjectTerms(options.goal, ...queries)) : judgement.level;
     if (!criteria) return { level };
     const category = criteria.find((c) => c.category === judgement.category)?.category;
@@ -292,6 +313,7 @@ function funnelDetails(run: ResearchRun) {
     searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel },
     classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
   };
+  if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
   if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
   return details;
 }
@@ -439,6 +461,7 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   run.funnel = emptyFunnel(run.classifier, run.criteria);
   run.searchWarnings = [];
   run.judgeFailures = 0;
+  run.offTopicDiscarded = [];
   const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
     ? response.results.map((r, i) => `${i + 1}. ${label(r)}\n   ${r.url}\n   ${shortSnippet(r.summary)}`).join("\n\n")
@@ -486,7 +509,7 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
     ? choice
     : await detectClassifier(options.modelRegistry, choice);
   const criteria = classifier ? options.criteria : undefined;
-  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria, judgeFailures: 0 };
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria, judgeFailures: 0, offTopicDiscarded: [] };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
     const outcome = await runSubagent(run, model);
