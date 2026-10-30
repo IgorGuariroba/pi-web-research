@@ -41,8 +41,8 @@ test("núcleo: subagente falhando cai no Fallback cru com os resultados do Provi
     const result = await h.run({ goal: "Descobrir X" });
     const text = textOf(result);
     assert.match(text, /^\[Fallback sem síntese — o subagente falhou: /);
-    assert.match(text, /1\. Um\n   https:\/\/a\.test\/1\n   primeiro/);
-    assert.match(text, /2\. Dois\n   https:\/\/b\.test\/2/);
+    assert.match(text, /1\. Um \[tavily\]\n   https:\/\/a\.test\/1\n   primeiro/);
+    assert.match(text, /2\. Dois \[tavily\]\n   https:\/\/b\.test\/2/);
     assert.deepEqual(tavily.calls, ["Descobrir X"]);
     assert.equal(result.details.fallback, true);
     assert.equal(result.details.provider, "tavily");
