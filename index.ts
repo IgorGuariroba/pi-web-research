@@ -43,6 +43,16 @@ import type { SearchMode } from "./aggregate-search.ts";
 const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
   choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
 
+const describeBlockedDomains = (domains: readonly string[] | undefined) =>
+  domains?.length ? domains.join(", ") : "nenhum";
+
+/** "https://www.Spam.com/x, foo.test" → ["spam.com", "foo.test"] (sem esquema, www., caminho; sem repetidos). */
+const parseBlockedDomains = (typed: string) => [...new Set(
+  typed.split(/[\s,;]+/)
+    .map((d) => d.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/[/?#].*$/, "").replace(/^www\./, ""))
+    .filter(Boolean),
+)];
+
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
 export { resolveActiveProvider } from "./resolve-provider.ts";
@@ -120,6 +130,11 @@ export default function webSearchExtension(pi: ExtensionAPI) {
           label: "Classificador",
           description: `atual: ${describeClassifierChoice(loadState(statePath).classifier)}`,
         },
+        {
+          value: "blocked",
+          label: "Domínios bloqueados",
+          description: `atual: ${describeBlockedDomains(loadState(statePath).blockedDomains)}`,
+        },
       ];
 
       const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
@@ -178,6 +193,20 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         latest.classifier = choice === AUTO ? "auto" : choice === NONE ? "none" : { provider: picked!.provider, id: picked!.id };
         saveState(statePath, latest);
         ctx.ui.notify(`Classificador: ${describeClassifierChoice(latest.classifier)} ✓`, "info");
+        return;
+      }
+
+      if (selected === "blocked") {
+        const current = loadState(statePath).blockedDomains ?? [];
+        const typed = await ctx.ui.input(
+          `Domínios bloqueados (além da lista fixa de spam), separados por vírgula; a lista digitada substitui a atual, vazio limpa. Atual: ${describeBlockedDomains(current)}`,
+          current.length ? current.join(", ") : "ex.: fazenda-de-conteudo.com, spam.example",
+        );
+        if (typed === undefined) return;
+        const latest = loadState(statePath);
+        latest.blockedDomains = parseBlockedDomains(typed);
+        saveState(statePath, latest);
+        ctx.ui.notify(`Domínios bloqueados: ${describeBlockedDomains(latest.blockedDomains)} ✓`, "info");
         return;
       }
 
