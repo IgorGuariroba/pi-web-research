@@ -141,3 +141,83 @@ for (const withCriteria of [true, false]) {
     }
   });
 }
+
+// Review Codex (P1): leitura direta não contorna a curadoria. Domínio spam/bloqueado
+// (na URL pedida ou no destino do redirect), Nível spam do classificador ou Categoria
+// de descarte do Critério: o subagente recebe só um aviso curto, a página não vira
+// Fonte lida, não cobre Categoria e entra em details.discardedReads.
+const RESTRITO = "CONTEUDO_RESTRITO sobre Bun.";
+async function directRead({ url, pages, classifier = "none", params = {}, script }) {
+  const cite = `Síntese.\n\nFontes\n- ${url}`;
+  const h = await setupResearch({
+    modelRef, classifier, providers: [fakeProvider("tavily", [])],
+    pages: pages ?? { [url]: { contentType: "text/plain", body: RESTRITO } },
+    script: script ?? [turn.fetch(url), turn.text(cite), turn.text(cite)],
+  });
+  try {
+    const result = await h.run({ goal: "Bun em produção", ...params });
+    return { h, result, read: h.llm.toolResults()[0] ?? "" };
+  } finally {
+    await h.cleanup();
+  }
+}
+
+const assertDiscardedRead = ({ read, result }, url, reason) => {
+  assert.match(read, /Página descartada/);
+  assert.doesNotMatch(read, /CONTEUDO_RESTRITO/);
+  assert.equal(result.details.sourcesRead, 0);
+  assert.deepEqual(result.details.removedCitations, [url]);
+  assert.doesNotMatch(textOf(result), new RegExp(`${url.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
+  assert.deepEqual(result.details.discardedReads, [{ url, reason }]);
+};
+
+test("leitura direta de domínio em blockedDomains é descartada sem buscar a página", async () => {
+  const url = "https://blocked.test/promo";
+  const out = await directRead({ url, params: { blockedDomains: ["blocked.test"] } });
+  assertDiscardedRead(out, url, "spam");
+  assert.deepEqual(out.h.pages.requests, []);
+});
+
+test("leitura direta de domínio da lista fixa de spam é descartada", async () => {
+  const url = "https://www.pinterest.com/pin/1";
+  const out = await directRead({ url });
+  assertDiscardedRead(out, url, "spam");
+});
+
+test("URL conhecida da busca que redireciona para domínio bloqueado é descartada", async () => {
+  const url = "https://ok.test/a";
+  const final = "https://blocked.test/destino";
+  const cite = `Síntese.\n\nFontes\n- ${url}`;
+  const h = await setupResearch({
+    modelRef, providers: [fakeProvider("tavily", [r(url, "Ok")])],
+    pages: { [url]: { status: 302, headers: { location: final } }, [final]: { contentType: "text/plain", body: RESTRITO } },
+    script: [turn.search("bun"), turn.fetch(url), turn.text(cite), turn.text(cite)],
+  });
+  try {
+    const result = await h.run({ goal: "Bun em produção" }, { blockedDomains: ["blocked.test"] });
+    const read = h.llm.toolResults()[1];
+    assert.match(read, /Página descartada/);
+    assert.doesNotMatch(read, /CONTEUDO_RESTRITO/);
+    assert.equal(result.details.sourcesRead, 0);
+    assert.deepEqual(result.details.discardedReads, [{ url: final, reason: "spam" }]);
+    assert.doesNotMatch(textOf(result), /ok\.test.*\[/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("leitura direta julgada spam pelo classificador é descartada", async () => {
+  const url = "https://spam.test/promo";
+  const out = await directRead({ url, classifier: fakeClassifier({ [url]: { level: "spam" } }) });
+  assertDiscardedRead(out, url, "spam");
+});
+
+test("leitura direta em Categoria de descarte do Critério é descartada e não cobre Categoria", async () => {
+  const url = "https://marketing.test/promo";
+  const withDiscard = [...criteria, { category: "marketing", description: "promocional", discard: true }];
+  const out = await directRead({
+    url, classifier: fakeClassifier({ [url]: { level: "blog", category: "marketing" } }), params: { criteria: withDiscard },
+  });
+  assertDiscardedRead(out, url, "critério");
+  assert.deepEqual(out.result.details.readsByCategory, { "relato-producao": 0, benchmark: 0 });
+});

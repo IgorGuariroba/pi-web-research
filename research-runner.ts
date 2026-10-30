@@ -24,9 +24,11 @@ import { canonicalUrl } from "./canonical-url.ts";
 import { errorMessage } from "./error-message.ts";
 import type { SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
-import { classifyRead, focusPage, OFF_TOPIC_READ, search, titledLabel } from "./curation.ts";
-import { criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ResearchRun } from "./research-run.ts";
-import { shortSnippet, sourceLevel, subjectTerms } from "./source-level.ts";
+import { classifyRead, discardedReadNotice, focusPage, search, titledLabel } from "./curation.ts";
+import {
+  criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ReadDiscardReason, type ResearchRun,
+} from "./research-run.ts";
+import { isSpam, shortSnippet, sourceLevel, subjectTerms } from "./source-level.ts";
 import { DEFAULT_CLASSIFIER, detectClassifier, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
 import {
@@ -114,17 +116,25 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const queries: string[] = [];
   /** Classificação dos resultados mostrados nas buscas, pela URL canônica. */
   const seen = new Map<string, SourceLabel>();
-  /** Rótulo da Fonte lida; undefined = página Fora do tema (descartada). */
-  const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel | undefined> => {
+  /**
+   * Rótulo da Fonte lida, ou o motivo do descarte. Domínio spam/bloqueado na URL
+   * final vale mesmo para URL já vista nas buscas (redirect não contorna o corte).
+   */
+  const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel | ReadDiscardReason> => {
+    if (isSpam(final, options.blockedDomains)) return "spam";
     const known = seen.get(canonicalUrl(requested)) ?? seen.get(canonicalUrl(final));
     if (known) return known;
     // Página fora das buscas: classificada na leitura; sem classificador (ou em
     // falha), Nível por regras e Categoria `outros` com Critério ativo.
     const judged = await classifyRead(run, final, text, queries, toolSignal);
-    if (judged && "offTopic" in judged) return undefined;
+    if (judged && "discard" in judged) return judged.discard;
     if (judged) return judged;
     const level = sourceLevel(final, subjectTerms(options.goal, ...queries));
     return run.criteria ? { level, category: OTHER_CATEGORY } : { level };
+  };
+  const discardRead = (url: string, reason: ReadDiscardReason) => {
+    run.discardedReads.push({ url, reason });
+    return { content: [{ type: "text" as const, text: `URL final: ${url}\n\n${discardedReadNotice(reason)}` }] };
   };
 
   // IMPORTANTE: reutiliza o ModelRuntime do agente pai. Sem isso, o SDK cria um
@@ -156,6 +166,8 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     description: "Lê uma página HTTP(S) pública e retorna texto truncado.",
     parameters: Type.Object({ url: Type.String() }),
     async execute(_id, params, toolSignal) {
+      // Domínio spam/bloqueado: nem busca a página (e não gasta orçamento).
+      if (isSpam(params.url, options.blockedDomains)) return discardRead(params.url, "spam");
       if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }] };
       options.onProgress?.(`Lendo fonte: ${params.url}`);
       let page: Awaited<ReturnType<typeof fetchPage>>;
@@ -166,7 +178,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
         throw error;
       }
       const sourceLabel = await labelOf(params.url, page.url, page.text, toolSignal);
-      if (!sourceLabel) return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${OFF_TOPIC_READ}` }] };
+      if (typeof sourceLabel === "string") return discardRead(page.url, sourceLabel);
       sources.add(params.url, page.url, sourceLabel);
       const text = await focusPage(run, page.text, queries, toolSignal);
       return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
@@ -239,6 +251,7 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   run.searchWarnings = [];
   run.judgeFailures = 0;
   run.offTopicDiscarded = [];
+  run.discardedReads = [];
   const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
     ? response.results.map((r, i) => `${i + 1}. ${titledLabel(r)}\n   ${r.url}\n   ${shortSnippet(r.summary)}`).join("\n\n")
@@ -269,7 +282,7 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
     ? choice
     : await detectClassifier(options.modelRegistry, choice);
   const criteria = classifier ? options.criteria : undefined;
-  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria, judgeFailures: 0, offTopicDiscarded: [] };
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria, judgeFailures: 0, offTopicDiscarded: [], discardedReads: [] };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
     const outcome = await runSubagent(run, model);

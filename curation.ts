@@ -8,9 +8,11 @@ import { OFF_TOPIC_THRESHOLD, type Classifier } from "./classifier.ts";
 import { OTHER_CATEGORY, type Criterion } from "./criteria.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
 import type { SourceLabel } from "./read-sources.ts";
-import { classifierFailed, keptCount, recordOffTopic, type CuratedResult, type ResearchRun } from "./research-run.ts";
 import {
-  curateByRules, isSpam, MAX_RESULTS_PER_SEARCH, sourceLabelText, sourceLevel, sortByLevel, subjectTerms,
+  classifierFailed, keptCount, recordOffTopic, type CuratedResult, type ReadDiscardReason, type ResearchRun,
+} from "./research-run.ts";
+import {
+  curateByRules, isSpam, MAX_RESULTS_PER_SEARCH, sourceLabelText, sortByLevel, subjectTerms,
 } from "./source-level.ts";
 
 /**
@@ -115,19 +117,19 @@ export async function focusPage(run: ResearchRun, text: string, queries: readonl
 
 const READ_SUMMARY_MAX = 300;
 
-/** Página lida julgada Fora do tema: sempre descartada (não vira Fonte lida). */
-interface OffTopicRead {
-  offTopic: number;
+/** Página lida descartada pela curadoria: não vira Fonte lida nem chega ao subagente. */
+export interface DiscardedPage {
+  discard: ReadDiscardReason;
 }
 
 /**
  * Classificação na leitura de página fora das buscas: Fora do tema, Nível e
- * Categoria do Critério. Fora do tema → descarte (com ou sem Critério).
- * Spam → Nível por regras. undefined = sem classificador ou falha.
+ * Categoria do Critério. Fora do tema, Nível spam ou Categoria de descarte →
+ * descarte (o mesmo corte das buscas). undefined = sem classificador ou falha.
  */
 export async function classifyRead(
   run: ResearchRun, url: string, text: string, queries: readonly string[], signal?: AbortSignal,
-): Promise<SourceLabel | OffTopicRead | undefined> {
+): Promise<SourceLabel | DiscardedPage | undefined> {
   const { options, classifier, criteria } = run;
   if (!classifier) return undefined;
   const title = (text.split("\n", 1)[0] ?? "").trim().slice(0, 200) || url;
@@ -145,17 +147,24 @@ export async function classifyRead(
     if (!judgement) return undefined;
     if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
       recordOffTopic(run, url, judgement.offTopic);
-      return { offTopic: judgement.offTopic };
+      return { discard: "fora do tema" };
     }
-    const level = judgement.level === "spam" ? sourceLevel(url, subjectTerms(options.goal, ...queries)) : judgement.level;
-    if (!criteria) return { level };
-    const category = criteria.find((c) => c.category === judgement.category)?.category;
-    return { level, category: category ?? OTHER_CATEGORY };
+    if (judgement.level === "spam") return { discard: "spam" };
+    if (!criteria) return { level: judgement.level };
+    const criterion = criteria.find((c) => c.category === judgement.category);
+    if (criterion?.discard) return { discard: "critério" };
+    return { level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY };
   } catch (error) {
     classifierFailed(run, classifier, error, signal, true);
     return undefined;
   }
 }
 
-export const OFF_TOPIC_READ =
-  "Página descartada: Fora do tema do Goal. Não é Fonte lida; não a cite em 'Fontes' e não use o conteúdo dela.";
+/** Aviso curto devolvido ao subagente no lugar do conteúdo de página descartada. */
+const DISCARD_REASON: Record<ReadDiscardReason, string> = {
+  "fora do tema": "Fora do tema do Goal",
+  spam: "domínio de spam/bloqueado ou fonte julgada spam",
+  "critério": "Categoria de descarte do Critério",
+};
+export const discardedReadNotice = (reason: ReadDiscardReason) =>
+  `Página descartada: ${DISCARD_REASON[reason]}. Não é Fonte lida; não a cite em 'Fontes' e não use o conteúdo dela.`;

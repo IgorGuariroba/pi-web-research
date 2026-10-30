@@ -46,6 +46,17 @@ export interface ResearchRun {
   judgeFailures: number;
   /** Amostra dos descartados por Fora do tema (auditoria/recalibração do limiar; só nos details). */
   offTopicDiscarded: OffTopicDiscard[];
+  /** Leituras via fetch_url descartadas pela curadoria (não são Fontes lidas). */
+  discardedReads: DiscardedRead[];
+}
+
+/** Motivo do descarte de uma página lida: mesmo corte do Funil nas buscas. */
+export type ReadDiscardReason = "spam" | "fora do tema" | "critério";
+
+export interface DiscardedRead {
+  /** URL final da leitura (ou a pedida, quando bloqueada antes de buscar). */
+  url: string;
+  reason: ReadDiscardReason;
 }
 
 export interface OffTopicDiscard {
@@ -78,6 +89,7 @@ export function funnelDetails(run: ResearchRun) {
     classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
   };
   if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
+  if (run.discardedReads.length) details.discardedReads = [...run.discardedReads];
   if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
   return details;
 }
