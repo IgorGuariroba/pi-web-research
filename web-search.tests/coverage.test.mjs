@@ -151,3 +151,51 @@ test("página lida fora das buscas classificada como outros entra em \"Fontes\" 
     assert.match(text, /Fontes\n- https:\/\/forum\.algo\.test\/t\/1 \[outros · blog\]\n\nNão encontrado\n- relato-producao/);
     assert.deepEqual(result.details.readsByCategory, { "relato-producao": 0, benchmark: 0, issue: 0 });
   }));
+
+// Review Codex (P2): a Lacuna declarada é só a do código. Qualquer seção
+// "Não encontrado" (ou variação óbvia) escrita pelo subagente sai, com ou sem
+// Critério; o resto da Síntese fica intacto.
+test("seção \"Não encontrado\" inventada pelo subagente sai quando a Categoria foi lida", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r(CASE, "Case"), r(BENCH, "Bench"), r("https://issue.test/1")])],
+    pages: { [CASE]: page("a"), [BENCH]: page("b"), "https://issue.test/1": page("c") },
+    classifier: fakeClassifier({
+      [CASE]: { category: "relato-producao" }, [BENCH]: { category: "benchmark" }, "https://issue.test/1": { category: "issue" },
+    }),
+    script: [
+      turn.search("bun"), turn.fetch(CASE), turn.fetch(BENCH), turn.fetch("https://issue.test/1"),
+      turn.text(`Síntese.\n\n## Não encontrado\n- benchmark: nada achado\n\nConclusão final.\n\nFontes\n- ${CASE}`),
+    ],
+  }, async (h) => {
+    const result = await h.run({ goal: "Bun em produção", depth: "deep", criteria });
+    assert.equal(textOf(result), `Síntese.\n\nConclusão final.\n\nFontes\n- ${CASE} [relato-producao · blog]`);
+  }));
+
+test("lacuna do subagente é trocada pela do código, sem duplicar", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r(CASE, "Case"), r(BENCH, "Bench")])],
+    pages: { [CASE]: page("a"), [BENCH]: page("b") },
+    classifier: searchJudge,
+    script: [
+      turn.search("bun"), turn.fetch(CASE), turn.fetch(BENCH),
+      turn.text(`Síntese.\n\nFontes\n- ${CASE}\n\n**Não encontrados:**\n- benchmark\n- marketing`),
+    ],
+  }, async (h) => {
+    const result = await h.run({ goal: "Bun em produção", depth: "deep", criteria });
+    const text = textOf(result);
+    assert.equal(text.match(/encontrad/gi).length, 1);
+    assert.match(text, /\[relato-producao · fórum\]\n\nNão encontrado\n- issue: bugs abertos no rastreador$/);
+  }));
+
+test("sem Critério, \"Não encontrado\"/Lacunas escritas pelo subagente saem", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r("https://docs.bun.test/guia", "Guia")])],
+    pages: { "https://docs.bun.test/guia": page("Bun em produção.") },
+    script: [
+      turn.search("produção"), turn.fetch("https://docs.bun.test/guia"),
+      turn.text("Síntese.\n\nLacunas: nada sobre benchmark.\n- sem números\n\nFontes\n- https://docs.bun.test/guia\n\nNão encontrado\n- benchmark"),
+    ],
+  }, async (h) => {
+    const result = await h.run({ goal: "Usar em produção" });
+    assert.equal(textOf(result), "Síntese.\n\nFontes\n- https://docs.bun.test/guia [docs]");
+  }));

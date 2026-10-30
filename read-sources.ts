@@ -106,14 +106,33 @@ export function removeUnreadCitations(text: string, sources: ReadSources): { tex
   return { text: result, removed: [...new Set(removed)] };
 }
 
+const GAP_HEADING =
+  /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:n[ãa]o\s+encontrad[oa]s?|lacunas?(?:\s+declaradas?)?)\s*(?:\*\*|__)?\s*(?::.*)?$/i;
+const LIST_ITEM = /^\s*(?:[-*•+]|\d+[.)])\s+|^\s{2,}\S/;
+
+/**
+ * Remove as seções de lacuna ("Não encontrado", "Lacunas"…) escritas pelo
+ * subagente: título e a lista logo abaixo. A Lacuna declarada é só a do código.
+ */
+export function stripWrittenGaps(text: string): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!GAP_HEADING.test(lines[i])) { kept.push(lines[i]); continue; }
+    while (i + 1 < lines.length && (!lines[i + 1].trim() || LIST_ITEM.test(lines[i + 1]))) i++;
+  }
+  return kept.join("\n").trimEnd();
+}
+
 /**
  * Verificação final de "Fontes": tira as citações não lidas, rotula as Fontes
  * lidas e, com Critério ativo, declara a lacuna das Categorias sem Fonte lida.
+ * Lacunas escritas pelo subagente saem sempre (sem Critério não há lacuna).
  */
 export function verifySources(
   answer: string, sources: ReadSources, criteria?: readonly Criterion[],
 ): { text: string; removed: string[] } {
-  const { text: verified, removed } = removeUnreadCitations(answer, sources);
+  const { text: verified, removed } = removeUnreadCitations(stripWrittenGaps(answer), sources);
   const labeled = labelCitations(verified, sources);
   return { text: criteria ? declareGap(labeled, sources, criteria) : labeled, removed };
 }
