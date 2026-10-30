@@ -119,10 +119,23 @@ const LEVEL_LABELS: Record<string, JudgedLevel> = {
 
 const SUMMARY_MAX = 300;
 
+/**
+ * Referência ao resultado dentro da própria pergunta: o julgamento é em lote
+ * (uma chamada por busca, decisão da spec), então cada pergunta repete título e
+ * URL do item para o modelo não depender só do índice.
+ */
+const itemRef = (i: number, result: ResultToJudge) => `results[${i}] ("${result.title.slice(0, 120)}" — ${result.url})`;
+
 type ClassifierModel = Parameters<ModelRegistry["classify"]>[0];
 
 /** Adaptador do Classificador sobre a classificação do model registry do Pi. */
 export function piClassifier(registry: ModelRegistry, model: ClassifierModel): Classifier {
+  /** Uma `classify` do registry; rejeita se o modelo não terminou normalmente. */
+  const classify = async (context: { state: unknown; questions: Record<string, unknown> }, signal?: AbortSignal) => {
+    const response = await registry.classify(model, context as never, { signal });
+    if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
+    return response;
+  };
   return {
     name: `${model.provider}/${model.id}`,
     async judgeResults(input, signal) {
@@ -136,16 +149,20 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
           categoryCriteria[label] = criterion ? criterion.description : "não se encaixa em nenhuma das outras Categorias";
         }
       }
-      input.results.forEach((_, i) => {
+      input.results.forEach((result, i) => {
         const keys = questionKeys(i);
+        const item = itemRef(i, result);
         questions[keys.offTopic] = {
           type: "bool",
-          instructions: `results[${i}] está fora do tema do goal (não ajuda a responder goal/focus)?`,
-          criteria: { true: "fora do tema: assunto diferente do goal", false: "relacionado ao goal" },
+          instructions: `O assunto de ${item} é diferente do assunto do goal?`,
+          criteria: {
+            true: "fora do tema: trata de outro assunto (ex.: homônimo, outro produto, outro domínio)",
+            false: "mesmo assunto do goal, ainda que genérico, introdutório ou pouco detalhado",
+          },
         };
         questions[keys.level] = {
           type: "choice",
-          instructions: `Nível de fonte de results[${i}] em relação ao assunto do goal.`,
+          instructions: `Nível de fonte de ${item} em relação ao assunto do goal.`,
           criteria: {
             oficial: "site oficial do projeto/produto/organização do assunto, ou norma/autoridade",
             docs: "documentação técnica ou referência (não oficial do assunto)",
@@ -157,7 +174,7 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
         if (criteria) {
           questions[keys.category] = {
             type: "choice",
-            instructions: `Categoria do Critério (tipo de fonte) que melhor descreve results[${i}].`,
+            instructions: `Categoria do Critério (tipo de fonte) que melhor descreve ${item}.`,
             criteria: categoryCriteria,
           };
         }
@@ -169,8 +186,7 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
         })),
         ...(criteria ? { criteria: criteria.map(({ category, description }) => ({ category, description })) } : {}),
       };
-      const response = await registry.classify(model, { state, questions } as never, { signal });
-      if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
+      const response = await classify({ state, questions }, signal);
       const judgements = input.results.map((_, i): ResultJudgement => {
         const keys = questionKeys(i);
         const offTopic = response.answers[keys.offTopic];
@@ -197,8 +213,7 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
         goal: input.goal, ...(input.focus ? { focus: input.focus } : {}), ...(input.query ? { query: input.query } : {}),
         passages: [...input.passages],
       };
-      const response = await registry.classify(model, { state, questions } as never, { signal });
-      if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
+      const response = await classify({ state, questions }, signal);
       const scores = input.passages.map((_, i) => {
         const answer = response.answers[passageKey(i)];
         return answer?.type === "bool" ? answer.probability : 0;

@@ -200,3 +200,21 @@ test("adaptador do Pi faz uma única classify por busca com goal, query e result
     assert.deepEqual(ctx.state.results.map((x) => x.url), ["https://react.dev/learn", "https://off.test/x"]);
   });
 });
+
+test("adaptador do Pi: cada pergunta mede o TEMA e cita o título/URL do próprio resultado", async () => {
+  const jev = registryClassifier("openrouter", "typesafe/jev-1.14", judge);
+  await withResearch({ providers: [twoResults()], classifier: "auto", registryClassifiers: [jev] }, async (h) => {
+    await h.run({ goal: "React hooks" });
+    const [ctx] = jev.calls;
+    assert.equal(jev.calls.length, 1, "uma chamada ao classificador por busca (decisão da spec)");
+    const items = [["Learn", "https://react.dev/learn"], ["Off", "https://off.test/x"]];
+    items.forEach(([title, url], i) => {
+      for (const key of [`r${i}_offtopic`, `r${i}_level`]) {
+        const { instructions } = ctx.questions[key];
+        assert.ok(instructions.includes(url) && instructions.includes(title), `${key} cita o próprio item: ${instructions}`);
+      }
+      // Fora do tema = assunto diferente; utilidade não entra na pergunta.
+      assert.doesNotMatch(ctx.questions[`r${i}_offtopic`].instructions, /ajuda a responder|útil/);
+    });
+  });
+});
