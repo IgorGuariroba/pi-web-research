@@ -3,6 +3,7 @@
  */
 
 import { canonicalUrl } from "./canonical-url.ts";
+import { sourceLabelText } from "./source-level.ts";
 import type { Criterion } from "./criteria.ts";
 
 /** Classificação de uma Fonte lida: Nível e, com Critério ativo, Categoria. */
@@ -43,8 +44,6 @@ export class ReadSources {
   }
 }
 
-const labelText = (label: SourceLabel) => `[${label.category ? `${label.category} · ` : ""}${label.level}]`;
-
 /**
  * Reescreve "Fontes" com o rótulo `[categoria · nível]` (ou `[nível]`) de cada
  * Fonte lida. Linhas com mais de uma URL viram uma linha por URL.
@@ -57,8 +56,8 @@ export function labelCitations(text: string, sources: ReadSources): string {
   const body = lines.slice(start + 1).flatMap((line) => {
     const urls = [...new Set(urlsIn(line))].filter((url) => sources.has(url));
     if (!urls.length) return [line];
-    if (urls.length === 1) return [`${line.trimEnd()} ${labelText(sources.label(urls[0])!)}`];
-    return urls.map((url) => `- ${url} ${labelText(sources.label(url)!)}`);
+    if (urls.length === 1) return [`${line.trimEnd()} ${sourceLabelText(sources.label(urls[0])!)}`];
+    return urls.map((url) => `- ${url} ${sourceLabelText(sources.label(url)!)}`);
   });
   return [...lines.slice(0, start + 1), ...body].join("\n");
 }

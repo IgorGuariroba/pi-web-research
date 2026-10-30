@@ -21,11 +21,12 @@ import { Type } from "typebox";
 import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
+import { errorMessage } from "./error-message.ts";
 import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
 import {
-  curateByRules, isSpam, sourceLevel, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
+  curateByRules, isSpam, sourceLevel, sourceLabelText, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
 import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
@@ -148,8 +149,6 @@ function recordOffTopic(run: ResearchRun, url: string, offTopic: number) {
   if (run.offTopicDiscarded.length < OFF_TOPIC_SAMPLE) run.offTopicDiscarded.push({ url, offTopic });
 }
 
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
 /**
  * Falha do classificador: cancelamento propaga; senão vira aviso (o chamador cai
  * nas regras). Falha de julgamento (Fora do tema/Nível/Categoria) conta para o
@@ -157,7 +156,7 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  */
 function classifierFailed(run: ResearchRun, classifier: Classifier, error: unknown, signal: AbortSignal | undefined, judging: boolean) {
   if (signal?.aborted) throw error;
-  run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorText(error)}; usando regras`);
+  run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorMessage(error)}; usando regras`);
   if (judging) run.judgeFailures++;
 }
 
@@ -213,9 +212,8 @@ function sortByCriteria(results: CuratedResult[], criteria: readonly Criterion[]
   return results.sort((a, b) => rank(a) - rank(b));
 }
 
-/** Rótulo `[categoria · nível · providers]` (ou `[nível · providers]` sem Categoria). */
-const label = (result: CuratedResult) =>
-  result.category ? `${result.title} [${result.category} · ${result.level} · ${result.providers.join("+")}]` : `${result.title} ${levelLabel(result)}`;
+/** Linha de título do resultado mostrado: `título [categoria · nível · providers]`. */
+const titledLabel = (result: CuratedResult) => `${result.title} ${sourceLabelText(result)}`;
 
 /** Busca agregada + curadoria por regras: spam fora, Nível → Concordância, top 8. */
 async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
@@ -367,7 +365,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       for (const item of result.results) {
         seen.set(canonicalUrl(item.url), item.category ? { level: item.level, category: item.category } : { level: item.level });
       }
-      const list = result.results.map((r, i) => `${i + 1}. ${label(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
+      const list = result.results.map((r, i) => `${i + 1}. ${titledLabel(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
         || result.rawText || "Sem resultados.";
       const warnings = result.warnings.map((w) => `Aviso: ${w}`).join("\n");
       return { content: [{ type: "text", text: warnings ? `${warnings}\n\n${list}` : list }] };
@@ -465,14 +463,14 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   run.offTopicDiscarded = [];
   const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
-    ? response.results.map((r, i) => `${i + 1}. ${label(r)}\n   ${r.url}\n   ${shortSnippet(r.summary)}`).join("\n\n")
+    ? response.results.map((r, i) => `${i + 1}. ${titledLabel(r)}\n   ${r.url}\n   ${shortSnippet(r.summary)}`).join("\n\n")
     : response.rawText || "research: sem resultados.";
   const warnings = response.warnings.map((w) => `[Aviso: ${w}]\n`).join("");
   const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
   const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
   const criteria = criteriaNotice(run);
   return {
-    content: [{ type: "text", text: `${criteria.text ? `[${criteria.text}]\n` : ""}[Fallback sem síntese — o subagente falhou: ${errorText(error)}]\n${warnings}\n${truncation.content}${notice}` }],
+    content: [{ type: "text", text: `${criteria.text ? `[${criteria.text}]\n` : ""}[Fallback sem síntese — o subagente falhou: ${errorMessage(error)}]\n${warnings}\n${truncation.content}${notice}` }],
     details: {
       provider: response.providers.join("+"), query: options.goal, resultCount: response.results.length,
       fallback: true, researchModel, ...criteria.details, ...funnelDetails(run),

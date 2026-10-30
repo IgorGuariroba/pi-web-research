@@ -11,6 +11,7 @@
  */
 import type { SearchResult, WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
+import { errorMessage } from "./error-message.ts";
 
 export type SearchMode = "agregada" | "econômica";
 
@@ -31,8 +32,6 @@ export interface AggregatedSearch {
 }
 
 const isGoose = (provider: WebSearchProvider) => provider.name.startsWith("goose");
-
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export async function aggregateSearch(
   providers: readonly WebSearchProvider[],

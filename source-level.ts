@@ -6,6 +6,7 @@
  * `blockedDomains`. Nível baixo é só rebaixado, nunca removido.
  */
 import type { AggregatedResult } from "./aggregate-search.ts";
+import { canonicalHost } from "./canonical-url.ts";
 
 export type SourceLevel = "oficial" | "docs" | "blog" | "fórum";
 
@@ -44,7 +45,7 @@ const GENERIC_LABELS = new Set(["www", "docs", "developer", "developers", "api",
 const SECOND_LEVEL = new Set(["com", "co", "org", "net", "gov", "edu", "ac"]);
 
 const hostOf = (url: string) => {
-  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
+  try { return canonicalHost(new URL(url).hostname); } catch { return ""; }
 };
 
 const onDomain = (host: string, domains: readonly string[]) =>
@@ -90,7 +91,7 @@ export function sourceLevel(url: string, terms: ReadonlySet<string>): SourceLeve
 
 export function isSpam(url: string, blockedDomains: readonly string[] = []): boolean {
   const host = hostOf(url);
-  const blocked = blockedDomains.map((d) => d.trim().toLowerCase().replace(/^www\./, "")).filter(Boolean);
+  const blocked = blockedDomains.map(canonicalHost).filter(Boolean);
   return onDomain(host, SPAM_DOMAINS) || onDomain(host, blocked);
 }
 
@@ -124,5 +125,9 @@ export function shortSnippet(summary: string | undefined): string {
   return `${(space > SNIPPET_MAX * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-/** Rótulo `[nível · providers]`. */
-export const levelLabel = (result: LeveledResult) => `[${result.level} · ${result.providers.join("+")}]`;
+/**
+ * Rótulo de fonte `[categoria · nível · providers]`; Categoria e Providers são
+ * opcionais (ex.: `[nível]` em Fontes sem Critério).
+ */
+export const sourceLabelText = ({ category, level, providers }: { category?: string; level: string; providers?: readonly string[] }) =>
+  `[${[category, level, providers?.length ? providers.join("+") : undefined].filter(Boolean).join(" · ")}]`;

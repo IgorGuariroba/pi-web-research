@@ -38,6 +38,7 @@ import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
 import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
+import { canonicalHost } from "./canonical-url.ts";
 import type { SearchMode } from "./aggregate-search.ts";
 
 const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
@@ -49,7 +50,7 @@ const describeBlockedDomains = (domains: readonly string[] | undefined) =>
 /** "https://www.Spam.com/x, foo.test" → ["spam.com", "foo.test"] (sem esquema, www., caminho; sem repetidos). */
 const parseBlockedDomains = (typed: string) => [...new Set(
   typed.split(/[\s,;]+/)
-    .map((d) => d.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/[/?#].*$/, "").replace(/^www\./, ""))
+    .map((d) => canonicalHost(d.trim().replace(/^[a-z]+:\/\//i, "").replace(/[/?#].*$/, "")))
     .filter(Boolean),
 )];
 
