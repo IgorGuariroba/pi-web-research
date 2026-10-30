@@ -4,7 +4,7 @@ export type ResearchDepth = "quick" | "deep";
 
 const LIMITS = {
   quick: { searches: 3, fetches: 4, timeoutMs: 90_000 },
-  deep: { searches: 12, fetches: 15, timeoutMs: 300_000 },
+  deep: { searches: 12, fetches: 15, timeoutMs: 180_000 },
 } as const;
 
 export function getResearchLimits(depth: ResearchDepth) {

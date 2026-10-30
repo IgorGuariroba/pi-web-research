@@ -90,7 +90,7 @@ O modelo escolhe a tool `research` normalmente durante a conversa. Parâmetros:
 - `focus` (opcional) — o que interessa ao agente pai ou o formato desejado da Síntese
 - `depth` (opcional, padrão `quick`):
   - `quick` — até 3 buscas e 4 leituras de página em 90s, resposta curta
-  - `deep` — até 12 buscas e 15 leituras de página em 300s, investigação multi-fonte
+  - `deep` — até 12 buscas e 15 leituras de página em 180s, investigação multi-fonte
 - `criteria` (opcional) — **Critério**: 2 a 8 Categorias `{ category, description, discard? }` em ordem de prioridade, com ao menos uma sem `discard`. O subagente busca ativamente cada Categoria, lê para cobri-las (no `deep`, todas as não descartadas; no `quick`, as duas primeiras) e a Síntese termina com **"Não encontrado"** listando as Categorias sem nenhuma Fonte lida. Resultados de Categorias com `discard: true` nunca chegam ao subagente. Exige classificador; sem ele, o Critério é ignorado com aviso no topo da Síntese e nos `details`.
 
 Uma Busca agregada conta como uma única busca no orçamento.
