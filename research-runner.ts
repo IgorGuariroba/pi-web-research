@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
-import { focusedExtract } from "./focused-extract.ts";
+import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
 import {
   curateByRules, isSpam, sourceLevel, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
@@ -206,6 +206,64 @@ async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   return { ...response, results: curated.results.slice(0, MAX_RESULTS_PER_SEARCH) };
 }
 
+/**
+ * Extração focada: com classificador que dá nota a trechos, ~20 candidatos das
+ * regras são reordenados pela nota; sem ele (ou em falha), só regras.
+ */
+async function focusPage(run: ResearchRun, text: string, queries: readonly string[], signal?: AbortSignal): Promise<string> {
+  const { options } = run;
+  const context = [options.goal, options.focus, ...queries];
+  const classifier = run.classifier;
+  const candidates = classifier?.scorePassages ? focusedCandidates(text, context) : undefined;
+  if (!classifier?.scorePassages || !candidates) return focusedExtract(text, context);
+  try {
+    const { scores, costUsd } = await classifier.scorePassages(
+      { goal: options.goal, focus: options.focus, query: queries.at(-1), passages: candidates.passages }, signal,
+    );
+    run.classifierCost += costUsd;
+    return candidates.extract(scores);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorText(error)}; usando regras`);
+    return focusedExtract(text, context);
+  }
+}
+
+const READ_SUMMARY_MAX = 300;
+
+/**
+ * Classificação na leitura de página fora das buscas: Fora do tema, Nível e
+ * Categoria do Critério. Fora do tema → Categoria `outros` (não cobre).
+ * Spam ou falha → Nível por regras. undefined = sem classificador ou falha.
+ */
+async function classifyRead(run: ResearchRun, url: string, text: string, queries: readonly string[], signal?: AbortSignal): Promise<SourceLabel | undefined> {
+  const { options, classifier, criteria } = run;
+  if (!classifier) return undefined;
+  const title = (text.split("\n", 1)[0] ?? "").trim().slice(0, 200) || url;
+  try {
+    const { judgements, costUsd } = await classifier.judgeResults(
+      {
+        goal: options.goal, focus: options.focus, query: queries.at(-1) ?? options.goal,
+        results: [{ url, title, summary: text.slice(0, READ_SUMMARY_MAX) }],
+        ...(criteria ? { criteria } : {}),
+      },
+      signal,
+    );
+    run.classifierCost += costUsd;
+    const judgement = judgements[0];
+    if (!judgement) return undefined;
+    const level = judgement.level === "spam" ? sourceLevel(url, subjectTerms(options.goal, ...queries)) : judgement.level;
+    if (!criteria) return { level };
+    const onTopic = judgement.offTopic <= OFF_TOPIC_THRESHOLD;
+    const category = onTopic ? criteria.find((c) => c.category === judgement.category)?.category : undefined;
+    return { level, category: category ?? OTHER_CATEGORY };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorText(error)}; usando regras`);
+    return undefined;
+  }
+}
+
 function funnelDetails(run: ResearchRun) {
   const details: Record<string, unknown> = {
     searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel },
@@ -232,10 +290,13 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const queries: string[] = [];
   /** Classificação dos resultados mostrados nas buscas, pela URL canônica. */
   const seen = new Map<string, SourceLabel>();
-  const labelOf = (requested: string, final: string): SourceLabel => {
+  const labelOf = async (requested: string, final: string, text: string, toolSignal?: AbortSignal): Promise<SourceLabel> => {
     const known = seen.get(sourceKey(requested)) ?? seen.get(sourceKey(final));
     if (known) return known;
-    // Página fora das buscas: Nível por regras; Categoria `outros` com Critério ativo.
+    // Página fora das buscas: classificada na leitura; sem classificador (ou em
+    // falha), Nível por regras e Categoria `outros` com Critério ativo.
+    const judged = await classifyRead(run, final, text, queries, toolSignal);
+    if (judged) return judged;
     const level = sourceLevel(final, subjectTerms(options.goal, ...queries));
     return run.criteria ? { level, category: OTHER_CATEGORY } : { level };
   };
@@ -278,8 +339,8 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
         if (error instanceof UnsupportedPdfError) budget.refundFetch();
         throw error;
       }
-      sources.add(params.url, page.url, labelOf(params.url, page.url));
-      const text = focusedExtract(page.text, [options.goal, options.focus, ...queries]);
+      sources.add(params.url, page.url, await labelOf(params.url, page.url, page.text, toolSignal));
+      const text = await focusPage(run, page.text, queries, toolSignal);
       return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
     },
   };
