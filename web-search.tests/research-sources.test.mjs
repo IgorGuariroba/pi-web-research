@@ -22,7 +22,7 @@ test("fontes: Síntese citando só Fontes lidas passa intacta", async () => {
   });
   try {
     const result = await h.run({ goal: "Descobrir a resposta" });
-    assert.equal(textOf(result), sintese);
+    assert.equal(textOf(result), `${sintese} [docs]`);
     assert.equal(h.llm.requests.length, 3, "não deve pedir correção");
     assert.deepEqual(result.details.removedCitations, []);
     assert.equal(result.details.sourcesRead, 1);
@@ -46,7 +46,7 @@ test("fontes: citação não lida dispara um pedido de correção e a Síntese c
   try {
     const result = await h.run({ goal: "Descobrir a resposta" });
     assert.equal(h.llm.requests.length, 4, "uma única correção");
-    assert.equal(textOf(result), corrigida);
+    assert.equal(textOf(result), `${corrigida} [docs]`);
     assert.deepEqual(result.details.removedCitations, []);
     assert.equal(result.details.sourcesRead, 1);
   } finally {
@@ -63,7 +63,7 @@ test("fontes: se o subagente insistir, a URL não lida é removida de \"Fontes\"
   try {
     const result = await h.run({ goal: "Descobrir a resposta" });
     assert.equal(h.llm.requests.length, 4, "uma única correção");
-    assert.equal(textOf(result), `A resposta é 42.\n\nFontes\n- ${LIDA}`);
+    assert.equal(textOf(result), `A resposta é 42.\n\nFontes\n- ${LIDA} [docs]`);
     assert.deepEqual(result.details.removedCitations, [NAO_LIDA]);
     assert.equal(result.details.sourcesRead, 1);
   } finally {
@@ -114,7 +114,7 @@ test("fontes: citação que difere da Fonte lida só em www./barra final/fragmen
   });
   try {
     const result = await h.run({ goal: "Descobrir a resposta" });
-    assert.equal(textOf(result), sintese);
+    assert.equal(textOf(result), `${sintese} [docs]`);
     assert.equal(h.llm.requests.length, 2);
   } finally {
     await h.cleanup();
@@ -132,7 +132,7 @@ test("fontes: leitura que falhou (404) não é Fonte lida", async () => {
     const result = await h.run({ goal: "Descobrir a resposta" });
     assert.equal(result.details.sourcesRead, 1);
     assert.deepEqual(result.details.removedCitations, [quebrada]);
-    assert.equal(textOf(result), `A resposta é 42.\n\nFontes\n- ${LIDA}`);
+    assert.equal(textOf(result), `A resposta é 42.\n\nFontes\n- ${LIDA} [docs]`);
   } finally {
     await h.cleanup();
   }
