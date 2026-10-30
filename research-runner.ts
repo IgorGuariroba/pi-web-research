@@ -22,16 +22,15 @@ import { homedir } from "node:os";
 import type { WebSearchProvider } from "./search-types.ts";
 import { canonicalUrl } from "./canonical-url.ts";
 import { errorMessage } from "./error-message.ts";
-import { aggregateSearch, DEFAULT_SEARCH_MODE, type AggregatedResult, type SearchMode } from "./aggregate-search.ts";
+import type { SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
-import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
-import {
-  curateByRules, isSpam, sourceLevel, sourceLabelText, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
-} from "./source-level.ts";
-import { DEFAULT_CLASSIFIER, detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
+import { classifyRead, focusPage, OFF_TOPIC_READ, search, titledLabel } from "./curation.ts";
+import { criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ResearchRun } from "./research-run.ts";
+import { shortSnippet, sourceLevel, subjectTerms } from "./source-level.ts";
+import { DEFAULT_CLASSIFIER, detectClassifier, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
 import {
-  correctionMessage, declareGap, labelCitations, readsByCategory, ReadSources, removeUnreadCitations, unreadCitations, type SourceLabel,
+  correctionMessage, readsByCategory, ReadSources, unreadCitations, verifySources, type SourceLabel,
 } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
@@ -97,225 +96,6 @@ function textOfLastAssistant(messages: readonly any[]): string {
   return message?.content?.filter((item: any) => item.type === "text").map((item: any) => item.text).join("\n").trim() ?? "";
 }
 
-/** Contadores do Funil, acumulados nas buscas de uma Research. */
-interface Funnel {
-  found: number;
-  unique: number;
-  duplicates: number;
-  /** Resultados descartados como spam. */
-  spam: number;
-  /** Resultados descartados como Fora do tema (só com classificador). */
-  offTopic?: number;
-  /** Resultados descartados por Categoria de descarte do Critério (só com Critério ativo). */
-  criteriaDiscarded?: number;
-}
-
-const emptyFunnel = (classifier: Classifier | undefined, criteria?: readonly Criterion[]): Funnel => ({
-  found: 0, unique: 0, duplicates: 0, spam: 0,
-  ...(classifier ? { offTopic: 0 } : {}),
-  ...(classifier && criteria ? { criteriaDiscarded: 0 } : {}),
-});
-
-/** Resultados que sobreviveram ao descarte (spam, Fora do tema, Critério). */
-const keptCount = (funnel: Funnel) => funnel.unique - funnel.spam - (funnel.offTopic ?? 0) - (funnel.criteriaDiscarded ?? 0);
-
-/** Resultado curado com a Categoria do Critério, quando houver. */
-type CuratedResult = LeveledResult & { category?: string };
-
-interface ResearchRun {
-  options: RunResearchOptions;
-  funnel: Funnel;
-  searchWarnings: string[];
-  classifier?: Classifier;
-  classifierCost: number;
-  /** Critério ativo (só com classificador; sem ele o Critério é ignorado). */
-  criteria?: readonly Criterion[];
-  /** Julgamentos de resultados/páginas que caíram nas regras por falha do classificador. */
-  judgeFailures: number;
-  /** Amostra dos descartados por Fora do tema (auditoria/recalibração do limiar; só nos details). */
-  offTopicDiscarded: OffTopicDiscard[];
-}
-
-interface OffTopicDiscard {
-  url: string;
-  /** Probabilidade de Fora do tema dada pelo classificador. */
-  offTopic: number;
-}
-
-/** Máximo de descartados por Fora do tema listados nos details. */
-const OFF_TOPIC_SAMPLE = 20;
-
-function recordOffTopic(run: ResearchRun, url: string, offTopic: number) {
-  if (run.offTopicDiscarded.length < OFF_TOPIC_SAMPLE) run.offTopicDiscarded.push({ url, offTopic });
-}
-
-/**
- * Falha do classificador: cancelamento propaga; senão vira aviso (o chamador cai
- * nas regras). Falha de julgamento (Fora do tema/Nível/Categoria) conta para o
- * Critério degradado.
- */
-function classifierFailed(run: ResearchRun, classifier: Classifier, error: unknown, signal: AbortSignal | undefined, judging: boolean) {
-  if (signal?.aborted) throw error;
-  run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorMessage(error)}; usando regras`);
-  if (judging) run.judgeFailures++;
-}
-
-/**
- * Curadoria por classificador: spam fixo/blockedDomains sai sem gastar o
- * classificador; uma chamada julga o resto (Fora do tema e Nível). Em falha,
- * devolve undefined (a busca cai nas regras).
- */
-async function curateByClassifier(run: ResearchRun, classifier: Classifier, query: string, results: readonly AggregatedResult[], signal?: AbortSignal) {
-  const { options } = run;
-  const kept = results.filter((result) => !isSpam(result.url, options.blockedDomains));
-  let spam = results.length - kept.length;
-  let offTopic = 0;
-  let criteriaDiscarded = 0;
-  if (!kept.length) return { results: [] as CuratedResult[], spam, offTopic, criteriaDiscarded };
-  const criteria = run.criteria;
-  try {
-    const { judgements, costUsd } = await classifier.judgeResults(
-      {
-        goal: options.goal, focus: options.focus, query,
-        results: kept.map(({ url, title, summary }) => ({ url, title, summary })),
-        ...(criteria ? { criteria } : {}),
-      },
-      signal,
-    );
-    run.classifierCost += costUsd;
-    const leveled: CuratedResult[] = [];
-    kept.forEach((result, i) => {
-      const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
-      const criterion = criteria?.find((c) => c.category === judgement.category);
-      if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
-        offTopic++;
-        recordOffTopic(run, result.url, judgement.offTopic);
-      }
-      else if (judgement.level === "spam") spam++;
-      else if (criterion?.discard) criteriaDiscarded++;
-      else if (criteria) leveled.push({ ...result, level: judgement.level, category: criterion?.category ?? OTHER_CATEGORY });
-      else leveled.push({ ...result, level: judgement.level });
-    });
-    return { results: criteria ? sortByCriteria(sortByLevel(leveled), criteria) : sortByLevel(leveled), spam, offTopic, criteriaDiscarded };
-  } catch (error) {
-    classifierFailed(run, classifier, error, signal, true);
-    return undefined;
-  }
-}
-
-/** Ordena por prioridade do Critério (`outros` por último), estável sobre Nível → Concordância. */
-function sortByCriteria(results: CuratedResult[], criteria: readonly Criterion[]): CuratedResult[] {
-  const rank = (result: CuratedResult) => {
-    const index = criteria.findIndex((c) => c.category === result.category);
-    return index < 0 ? criteria.length : index;
-  };
-  return results.sort((a, b) => rank(a) - rank(b));
-}
-
-/** Linha de título do resultado mostrado: `título [categoria · nível · providers]`. */
-const titledLabel = (result: CuratedResult) => `${result.title} ${sourceLabelText(result)}`;
-
-/** Busca agregada + curadoria por regras: spam fora, Nível → Concordância, top 8. */
-async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
-  const { options, funnel } = run;
-  const response = await aggregateSearch(options.providers, query, options.searchMode ?? DEFAULT_SEARCH_MODE, signal);
-  const judged = run.classifier ? await curateByClassifier(run, run.classifier, query, response.results, signal) : undefined;
-  const curated = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
-  funnel.found += response.found;
-  funnel.unique += response.results.length;
-  funnel.duplicates = funnel.found - funnel.unique;
-  funnel.spam += curated.spam;
-  if (funnel.offTopic !== undefined) funnel.offTopic += judged?.offTopic ?? 0;
-  if (funnel.criteriaDiscarded !== undefined) funnel.criteriaDiscarded += judged?.criteriaDiscarded ?? 0;
-  run.searchWarnings.push(...response.warnings);
-  const kept = keptCount(funnel);
-  const discarded = [
-    `${funnel.spam} spam`,
-    ...(funnel.offTopic === undefined ? [] : [`${funnel.offTopic} fora do tema`]),
-    ...(funnel.criteriaDiscarded === undefined ? [] : [`${funnel.criteriaDiscarded} pelo Critério`]),
-  ].join(", ");
-  options.onProgress?.(`${funnel.found} resultados → ${funnel.unique} únicos → ${kept} após descarte (${discarded})`);
-  return { ...response, results: curated.results.slice(0, MAX_RESULTS_PER_SEARCH) };
-}
-
-/**
- * Extração focada: com classificador que dá nota a trechos, ~20 candidatos das
- * regras são reordenados pela nota; sem ele (ou em falha), só regras.
- */
-async function focusPage(run: ResearchRun, text: string, queries: readonly string[], signal?: AbortSignal): Promise<string> {
-  const { options } = run;
-  const context = [options.goal, options.focus, ...queries];
-  const classifier = run.classifier;
-  const candidates = classifier?.scorePassages ? focusedCandidates(text, context) : undefined;
-  if (!classifier?.scorePassages || !candidates) return focusedExtract(text, context);
-  try {
-    const { scores, costUsd } = await classifier.scorePassages(
-      { goal: options.goal, focus: options.focus, query: queries.at(-1), passages: candidates.passages }, signal,
-    );
-    run.classifierCost += costUsd;
-    return candidates.extract(scores);
-  } catch (error) {
-    classifierFailed(run, classifier, error, signal, false);
-    return focusedExtract(text, context);
-  }
-}
-
-const READ_SUMMARY_MAX = 300;
-
-/** Página lida julgada Fora do tema: sempre descartada (não vira Fonte lida). */
-interface OffTopicRead {
-  offTopic: number;
-}
-
-/**
- * Classificação na leitura de página fora das buscas: Fora do tema, Nível e
- * Categoria do Critério. Fora do tema → descarte (com ou sem Critério).
- * Spam → Nível por regras. undefined = sem classificador ou falha.
- */
-async function classifyRead(
-  run: ResearchRun, url: string, text: string, queries: readonly string[], signal?: AbortSignal,
-): Promise<SourceLabel | OffTopicRead | undefined> {
-  const { options, classifier, criteria } = run;
-  if (!classifier) return undefined;
-  const title = (text.split("\n", 1)[0] ?? "").trim().slice(0, 200) || url;
-  try {
-    const { judgements, costUsd } = await classifier.judgeResults(
-      {
-        goal: options.goal, focus: options.focus, query: queries.at(-1) ?? options.goal,
-        results: [{ url, title, summary: text.slice(0, READ_SUMMARY_MAX) }],
-        ...(criteria ? { criteria } : {}),
-      },
-      signal,
-    );
-    run.classifierCost += costUsd;
-    const judgement = judgements[0];
-    if (!judgement) return undefined;
-    if (judgement.offTopic > OFF_TOPIC_THRESHOLD) {
-      recordOffTopic(run, url, judgement.offTopic);
-      return { offTopic: judgement.offTopic };
-    }
-    const level = judgement.level === "spam" ? sourceLevel(url, subjectTerms(options.goal, ...queries)) : judgement.level;
-    if (!criteria) return { level };
-    const category = criteria.find((c) => c.category === judgement.category)?.category;
-    return { level, category: category ?? OTHER_CATEGORY };
-  } catch (error) {
-    classifierFailed(run, classifier, error, signal, true);
-    return undefined;
-  }
-}
-
-const OFF_TOPIC_READ =
-  "Página descartada: Fora do tema do Goal. Não é Fonte lida; não a cite em 'Fontes' e não use o conteúdo dela.";
-
-function funnelDetails(run: ResearchRun) {
-  const details: Record<string, unknown> = {
-    searchMode: run.options.searchMode ?? DEFAULT_SEARCH_MODE, funnel: { ...run.funnel },
-    classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
-  };
-  if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
-  if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
-  return details;
-}
 
 interface SubagentOutcome {
   text: string;
@@ -439,9 +219,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       await prompt(correctionMessage(unread));
       answer = textOfLastAssistant(session.messages) || answer;
     }
-    const { text: verified, removed } = removeUnreadCitations(answer, sources);
-    const labeled = labelCitations(verified, sources);
-    const text = run.criteria ? declareGap(labeled, sources, run.criteria) : labeled;
+    const { text, removed } = verifySources(answer, sources, run.criteria);
     options.onProgress?.(`${run.funnel.found} resultados → ${keptCount(run.funnel)} após descarte → ${sources.size} lidos`);
     return {
       text, sourcesRead: sources.size, removedCitations: removed,
@@ -476,23 +254,6 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
       fallback: true, researchModel, ...criteria.details, ...funnelDetails(run),
     },
   };
-}
-
-const CRITERIA_IGNORED =
-  "Critério ignorado — nenhum classificador disponível; resultados curados só por regras (sem Categoria nem descarte por Critério).";
-
-/**
- * Aviso sobre o Critério (topo da Síntese e details): ignorado (sem
- * classificador) ou degradado (classificador falhou em parte dos julgamentos).
- */
-function criteriaNotice(run: ResearchRun): { text?: string; details: Record<string, string> } {
-  if (run.options.criteria && !run.criteria) return { text: CRITERIA_IGNORED, details: { criteriaIgnored: CRITERIA_IGNORED } };
-  if (run.criteria && run.classifier && run.judgeFailures) {
-    const text = `Critério degradado — classificador ${run.classifier.name} falhou em ${run.judgeFailures} julgamento(s); `
-      + "esses resultados/páginas foram curados só por regras (sem Categoria nem descarte por Critério).";
-    return { text, details: { criteriaDegraded: text } };
-  }
-  return { details: {} };
 }
 
 const UNVERIFIED_NOTICE =

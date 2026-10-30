@@ -106,6 +106,18 @@ export function removeUnreadCitations(text: string, sources: ReadSources): { tex
   return { text: result, removed: [...new Set(removed)] };
 }
 
+/**
+ * Verificação final de "Fontes": tira as citações não lidas, rotula as Fontes
+ * lidas e, com Critério ativo, declara a lacuna das Categorias sem Fonte lida.
+ */
+export function verifySources(
+  answer: string, sources: ReadSources, criteria?: readonly Criterion[],
+): { text: string; removed: string[] } {
+  const { text: verified, removed } = removeUnreadCitations(answer, sources);
+  const labeled = labelCitations(verified, sources);
+  return { text: criteria ? declareGap(labeled, sources, criteria) : labeled, removed };
+}
+
 export function correctionMessage(unread: readonly string[]): string {
   return [
     "Sua seção 'Fontes' cita URLs que você não leu com fetch_url:",
