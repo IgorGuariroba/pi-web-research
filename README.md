@@ -43,7 +43,7 @@ Em sessões do Pi já abertas, rode `/reload` para carregar a extensão.
 Use o comando `/web-search` na TUI para:
 
 1. Escolher o provider de busca (Tavily ou Exa) e colar a chave de API — validada antes de salvar.
-2. Escolher o modelo usado pelo subagente de pesquisa (qualquer modelo disponível no seu catálogo).
+2. Escolher o modelo usado pelo subagente de pesquisa (qualquer modelo disponível no seu catálogo). Sem escolha salva, usa o primeiro modelo barato disponível (Haiku → Flash → mini) e, na falta, o modelo atual do agente pai.
 
 As credenciais e preferências ficam em `~/.pi/agent/extensions/web-search/state.json`, criado com permissão `0600`.
 
@@ -64,8 +64,8 @@ O modelo escolhe a tool `research` normalmente durante a conversa. Parâmetros:
 - `goal` (obrigatório) — o que precisa ser descoberto, não uma query literal
 - `focus` (opcional) — o que interessa ao agente pai; garante que só o essencial retorne ao contexto
 - `depth` (opcional, padrão `quick`):
-  - `quick` — até 2 buscas e 2 leituras de página, resposta curta
-  - `deep` — até 8 buscas e 8 leituras de página, investigação multi-fonte
+  - `quick` — até 3 buscas e 4 leituras de página em 90s, resposta curta
+  - `deep` — até 12 buscas e 15 leituras de página em 300s, investigação multi-fonte
 
 Exemplo de chamada feita pelo modelo:
 

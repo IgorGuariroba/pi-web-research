@@ -49,11 +49,14 @@ export function truncatePage(text: string, maxChars = 50_000): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n\n[conteúdo truncado]`;
 }
 
-export async function fetchPage(rawUrl: string, signal?: AbortSignal): Promise<{ url: string; text: string }> {
+/** Porta de HTTP injetável (assinatura do fetch global). */
+export type HttpFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+export async function fetchPage(rawUrl: string, signal?: AbortSignal, httpFetch: HttpFetch = fetch): Promise<{ url: string; text: string }> {
   const url = validateFetchUrl(rawUrl);
   const timeout = AbortSignal.timeout(20_000);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const response = await fetch(url, {
+  const response = await httpFetch(url.href, {
     signal: combined,
     redirect: "error",
     headers: { "user-agent": "pi-research-agent/1.0", accept: "text/html,text/plain,application/json" },

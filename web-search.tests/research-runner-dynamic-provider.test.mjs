@@ -89,7 +89,8 @@ test("runResearch funciona com provider registrado dinamicamente no runtime do p
     await runtime.refresh({ allowNetwork: false });
     const modelRegistry = new ModelRegistry(runtime);
 
-    const engine = {
+    const provider = {
+      name: "fake",
       async search() {
         return {
           provider: "fake",
@@ -99,16 +100,18 @@ test("runResearch funciona com provider registrado dinamicamente no runtime do p
       },
     };
 
-    const synthesis = await runResearch({
+    const result = await runResearch({
       goal: "teste",
       depth: "quick",
-      engine,
+      providers: [provider],
       modelRegistry,
       modelRef: { provider: "fake-dyn", id: "fake-model" },
       cwd: workDir,
+      agentDir,
     });
 
-    assert.match(synthesis, /Síntese fake concluída/);
+    assert.equal(result.details.synthesized, true);
+    assert.match(result.content[0].text, /Síntese fake concluída/);
   } finally {
     server.close();
     rmSync(workDir, { recursive: true, force: true });
