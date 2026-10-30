@@ -137,3 +137,30 @@ test("fontes: leitura que falhou (404) não é Fonte lida", async () => {
     await h.cleanup();
   }
 });
+
+// Review Codex (P2): URLs com parênteses balanceados (ex. Wikipedia) são citações
+// inteiras, nuas ou em link Markdown; delimitadores em volta não entram na URL.
+const WIKI = "https://en.wikipedia.org/wiki/Node.js_(runtime)";
+for (const [name, line] of [
+  ["nua", `- ${WIKI}`],
+  ["nua com pontuação final", `- ${WIKI}.`],
+  ["entre parênteses", `- Node (${WIKI})`],
+  ["em link Markdown", `- [Node.js](${WIKI})`],
+  ["entre <>", `- <${WIKI}>`],
+]) {
+  test(`fontes: URL com parênteses ${name} é reconhecida como Fonte lida`, async () => {
+    const h = await setupResearch({
+      modelRef: MODEL, providers: [fakeProvider("tavily", [])],
+      pages: { [WIKI]: "<html><body><p>Node.js é um runtime.</p></body></html>" },
+      script: [turn.fetch(WIKI), turn.text(`Síntese.\n\nFontes\n${line}`), turn.text("não deveria haver correção")],
+    });
+    try {
+      const result = await h.run({ goal: "Node.js runtime" });
+      assert.deepEqual(result.details.removedCitations, []);
+      assert.equal(h.llm.requests.length, 2);
+      assert.equal(textOf(result), `Síntese.\n\nFontes\n${line} [blog]`);
+    } finally {
+      await h.cleanup();
+    }
+  });
+}

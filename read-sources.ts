@@ -63,10 +63,27 @@ export function labelCitations(text: string, sources: ReadSources): string {
 }
 
 const HEADING = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*Fontes\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
-const URL_PATTERN = /https?:\/\/[^\s<>()\[\]"'`]+/g;
+const URL_PATTERN = /https?:\/\/[^\s<>\[\]"'`]+/g;
+
+const count = (text: string, char: string) => text.split(char).length - 1;
+
+/**
+ * Tira da ponta da URL o que é delimitador do texto: pontuação final e `)` sem
+ * `(` correspondente (fecho de link Markdown ou de parêntese). Parênteses
+ * balanceados ficam (ex.: `wiki/Node.js_(runtime)`).
+ */
+function trimUrl(url: string): string {
+  for (;;) {
+    const trimmed = url.replace(/[.,;:!?]+$/, "");
+    const unbalanced = trimmed.endsWith(")") && count(trimmed, ")") > count(trimmed, "(");
+    const next = unbalanced ? trimmed.slice(0, -1) : trimmed;
+    if (next === url) return url;
+    url = next;
+  }
+}
 
 function urlsIn(line: string): string[] {
-  return (line.match(URL_PATTERN) ?? []).map((url) => url.replace(/[.,;:!?]+$/, ""));
+  return (line.match(URL_PATTERN) ?? []).map(trimUrl);
 }
 
 /** Índice da linha de título da (última) seção "Fontes", ou -1. */
