@@ -3,29 +3,67 @@
  */
 
 import { canonicalUrl } from "./canonical-url.ts";
+import type { Criterion } from "./criteria.ts";
 
 /** Chave de comparação de Fonte lida: a URL canônica. */
 export const sourceKey = canonicalUrl;
 
+/** Classificação de uma Fonte lida: Nível e, com Critério ativo, Categoria. */
+export interface SourceLabel {
+  level: string;
+  category?: string;
+}
+
 /** Registro das Fontes lidas (leituras bem-sucedidas via fetch_url). */
 export class ReadSources {
-  #keys = new Set<string>();
-  #count = 0;
+  #byKey = new Map<string, SourceLabel>();
+  #reads: SourceLabel[] = [];
 
-  add(requested: string, final?: string): void {
+  add(requested: string, final: string | undefined, label: SourceLabel): void {
     const key = sourceKey(requested);
-    if (!this.#keys.has(key)) this.#count++;
-    this.#keys.add(key);
-    if (final) this.#keys.add(sourceKey(final));
+    const finalKey = final ? sourceKey(final) : key;
+    if (this.#byKey.has(key) || this.#byKey.has(finalKey)) return;
+    this.#reads.push(label);
+    this.#byKey.set(key, label);
+    this.#byKey.set(finalKey, label);
   }
 
   has(url: string): boolean {
-    return this.#keys.has(sourceKey(url));
+    return this.#byKey.has(sourceKey(url));
+  }
+
+  label(url: string): SourceLabel | undefined {
+    return this.#byKey.get(sourceKey(url));
+  }
+
+  /** Classificação de cada Fonte lida (uma por página). */
+  get reads(): readonly SourceLabel[] {
+    return this.#reads;
   }
 
   get size(): number {
-    return this.#count;
+    return this.#reads.length;
   }
+}
+
+const labelText = (label: SourceLabel) => `[${label.category ? `${label.category} · ` : ""}${label.level}]`;
+
+/**
+ * Reescreve "Fontes" com o rótulo `[categoria · nível]` (ou `[nível]`) de cada
+ * Fonte lida. Linhas com mais de uma URL viram uma linha por URL.
+ * Pressupõe que as citações não lidas já foram removidas.
+ */
+export function labelCitations(text: string, sources: ReadSources): string {
+  const lines = text.split("\n");
+  const start = sectionStart(lines);
+  if (start < 0) return text;
+  const body = lines.slice(start + 1).flatMap((line) => {
+    const urls = [...new Set(urlsIn(line))].filter((url) => sources.has(url));
+    if (!urls.length) return [line];
+    if (urls.length === 1) return [`${line.trimEnd()} ${labelText(sources.label(urls[0])!)}`];
+    return urls.map((url) => `- ${url} ${labelText(sources.label(url)!)}`);
+  });
+  return [...lines.slice(0, start + 1), ...body].join("\n");
 }
 
 const HEADING = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*Fontes\s*:?\s*(?:\*\*|__)?\s*:?\s*$/i;
@@ -79,4 +117,20 @@ export function correctionMessage(unread: readonly string[]): string {
     "Reescreva a Síntese completa, citando em 'Fontes' somente páginas que você leu com fetch_url com sucesso.",
     "Responda apenas com a Síntese corrigida.",
   ].join("\n");
+}
+
+/** Leituras por Categoria não descartada do Critério (inclui as com 0). */
+export function readsByCategory(sources: ReadSources, criteria: readonly Criterion[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const c of criteria) if (!c.discard) counts[c.category] = 0;
+  for (const read of sources.reads) if (read.category && read.category in counts) counts[read.category]++;
+  return counts;
+}
+
+/** Lacuna declarada: seção "Não encontrado" com as Categorias não descartadas sem Fonte lida. */
+export function declareGap(text: string, sources: ReadSources, criteria: readonly Criterion[]): string {
+  const reads = readsByCategory(sources, criteria);
+  const missing = criteria.filter((c) => !c.discard && reads[c.category] === 0);
+  if (!missing.length) return text;
+  return `${text.trimEnd()}\n\nNão encontrado\n${missing.map((c) => `- ${c.category}: ${c.description}`).join("\n")}`;
 }

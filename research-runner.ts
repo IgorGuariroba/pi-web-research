@@ -24,11 +24,13 @@ import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggre
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { focusedExtract } from "./focused-extract.ts";
 import {
-  curateByRules, isSpam, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
+  curateByRules, isSpam, sourceLevel, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
 import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { OTHER_CATEGORY, validateCriteria, type Criterion } from "./criteria.ts";
-import { correctionMessage, ReadSources, removeUnreadCitations, unreadCitations } from "./read-sources.ts";
+import {
+  correctionMessage, declareGap, labelCitations, readsByCategory, ReadSources, removeUnreadCitations, sourceKey, unreadCitations, type SourceLabel,
+} from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
 type Model = NonNullable<ReturnType<ModelRegistry["find"]>>;
@@ -217,6 +219,8 @@ interface SubagentOutcome {
   text: string;
   sourcesRead: number;
   removedCitations: string[];
+  /** Leituras por Categoria do Critério (só com Critério ativo). */
+  readsByCategory?: Record<string, number>;
 }
 
 async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutcome> {
@@ -226,6 +230,15 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const budget = createResearchBudget(depth);
   const limits = getResearchLimits(depth);
   const queries: string[] = [];
+  /** Classificação dos resultados mostrados nas buscas, pela URL canônica. */
+  const seen = new Map<string, SourceLabel>();
+  const labelOf = (requested: string, final: string): SourceLabel => {
+    const known = seen.get(sourceKey(requested)) ?? seen.get(sourceKey(final));
+    if (known) return known;
+    // Página fora das buscas: Nível por regras; Categoria `outros` com Critério ativo.
+    const level = sourceLevel(final, subjectTerms(options.goal, ...queries));
+    return run.criteria ? { level, category: OTHER_CATEGORY } : { level };
+  };
 
   // IMPORTANTE: reutiliza o ModelRuntime do agente pai. Sem isso, o SDK cria um
   // runtime novo que NÃO conhece providers registrados dinamicamente por
@@ -242,6 +255,9 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       options.onProgress?.(`Buscando: ${params.query}`);
       queries.push(params.query);
       const result = await search(run, params.query, toolSignal);
+      for (const item of result.results) {
+        seen.set(sourceKey(item.url), item.category ? { level: item.level, category: item.category } : { level: item.level });
+      }
       const list = result.results.map((r, i) => `${i + 1}. ${label(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
         || result.rawText || "Sem resultados.";
       const warnings = result.warnings.map((w) => `Aviso: ${w}`).join("\n");
@@ -262,7 +278,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
         if (error instanceof UnsupportedPdfError) budget.refundFetch();
         throw error;
       }
-      sources.add(params.url, page.url);
+      sources.add(params.url, page.url, labelOf(params.url, page.url));
       const text = focusedExtract(page.text, [options.goal, options.focus, ...queries]);
       return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
     },
@@ -314,8 +330,13 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       await prompt(correctionMessage(unread));
       answer = textOfLastAssistant(session.messages) || answer;
     }
-    const { text, removed } = removeUnreadCitations(answer, sources);
-    return { text, sourcesRead: sources.size, removedCitations: removed };
+    const { text: verified, removed } = removeUnreadCitations(answer, sources);
+    const labeled = labelCitations(verified, sources);
+    const text = run.criteria ? declareGap(labeled, sources, run.criteria) : labeled;
+    return {
+      text, sourcesRead: sources.size, removedCitations: removed,
+      ...(run.criteria ? { readsByCategory: readsByCategory(sources, run.criteria) } : {}),
+    };
   } finally {
     signal?.removeEventListener("abort", abort);
     session.dispose();
@@ -376,6 +397,7 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
       details: {
         depth: options.depth, synthesized: true, researchModel,
         sourcesRead: outcome.sourcesRead, removedCitations: outcome.removedCitations,
+        ...(outcome.readsByCategory ? { readsByCategory: outcome.readsByCategory } : {}),
         ...(unverified ? { unverified: true } : {}),
         ...(ignored ? { criteriaIgnored: ignored } : {}),
         ...funnelDetails(run),
