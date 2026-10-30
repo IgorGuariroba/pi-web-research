@@ -2,19 +2,10 @@
  * read-sources.ts — Fontes lidas e verificação da seção "Fontes" da Síntese.
  */
 
-/** Chave de comparação de Fonte lida (URL canônica simplificada). */
-export function sourceKey(raw: string): string {
-  try {
-    const url = new URL(raw.trim());
-    const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    const params = [...url.searchParams].filter(([k]) => !/^utm_/i.test(k) && k !== "ref" && k !== "fbclid");
-    const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
-    const path = url.pathname.replace(/\/+$/, "");
-    return `${host}${url.port ? `:${url.port}` : ""}${path}${query}`;
-  } catch {
-    return raw.trim();
-  }
-}
+import { canonicalUrl } from "./canonical-url.ts";
+
+/** Chave de comparação de Fonte lida: a URL canônica. */
+export const sourceKey = canonicalUrl;
 
 /** Registro das Fontes lidas (leituras bem-sucedidas via fetch_url). */
 export class ReadSources {

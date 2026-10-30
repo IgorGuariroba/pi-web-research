@@ -10,6 +10,9 @@
  * falha total vira erro.
  */
 import type { SearchResult, WebSearchProvider } from "./search-types.ts";
+import { canonicalUrl } from "./canonical-url.ts";
+
+export { canonicalUrl };
 
 export type SearchMode = "agregada" | "econômica";
 
@@ -27,21 +30,6 @@ export interface AggregatedSearch {
   warnings: string[];
   /** Texto cru do Goose (quando sem resultados estruturados). */
   rawText?: string;
-}
-
-const TRACKING_PARAM = /^(utm_.*|ref|fbclid)$/i;
-
-/** URL canônica: host minúsculo sem www., sem fragmento/rastreio/barra final; http = https. */
-export function canonicalUrl(raw: string): string {
-  let url: URL;
-  try { url = new URL(raw); } catch { return raw.trim(); }
-  const host = url.hostname.toLowerCase().replace(/^www\./, "");
-  const port = url.port ? `:${url.port}` : "";
-  const params = [...url.searchParams].filter(([key]) => !TRACKING_PARAM.test(key)).sort(([a], [b]) => a.localeCompare(b));
-  const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
-  const path = url.pathname.replace(/\/+$/, "");
-  const scheme = url.protocol === "http:" || url.protocol === "https:" ? "" : url.protocol;
-  return `${scheme}//${host}${port}${path}${query}`;
 }
 
 const isGoose = (provider: WebSearchProvider) => provider.name.startsWith("goose");
