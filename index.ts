@@ -3,19 +3,24 @@
  *
  * O agente pai vê apenas `research`; o subagente SDK in-process recebe as tools
  * internas `web_search` e `fetch_url`. Providers: Tavily, Exa (HTTP) e Goose (CLI).
- * O SearchEngine resolve o provider dinamicamente a cada busca.
+ * A tool é casca fina: monta as dependências e delega ao núcleo de Research
+ * (research-runner.ts), que executa o subagente e o Fallback cru.
  *
  * Arquitetura:
- *   research(goal, focus, depth) → subagente → web_search(query) → SearchEngine → WebSearchProvider
+ *   research(goal, focus, depth) → núcleo de Research → subagente → web_search(query)
+ *     → Busca agregada (aggregate-search.ts: agregada | econômica) → WebSearchProvider[]
  *     ├─ TavilyProvider    (HTTP, retry/backoff via HttpSearchProvider base)
  *     ├─ ExaProvider       (HTTP, retry/backoff via HttpSearchProvider base)
  *     └─ GooseBuiltinProvider (CLI via goose-adapter.ts)
  *
  * Módulos:
  *   - search-types.ts       contrato público (neutro quanto a provider).
- *   - search-engine.ts      orquestrador com provider dinâmico.
+ *   - research-runner.ts    núcleo de Research (subagente + Fallback cru, deps injetadas).
+ *   - curation.ts           curadoria do Funil (busca curada, Extração focada, leitura classificada).
+ *   - research-run.ts       estado da Research (Funil, avisos, details).
+ *   - classifier.ts         Classificador (Fora do tema + Nível) sobre o model registry do Pi.
  *   - state.ts              storage seguro (state.json, 0600).
- *   - resolve-provider.ts   lógica de resolução do provider ativo.
+ *   - resolve-provider.ts   resolução da lista de Providers da Busca agregada.
  *   - tavily-provider.ts    Tavily HTTP provider.
  *   - exa-provider.ts       Exa HTTP provider.
  *   - goose-provider.ts     Goose CLI provider.
@@ -28,20 +33,32 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "./research-runner.ts";
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
-import { SearchEngine } from "./search-engine.ts";
-import { GooseBuiltinProvider } from "./goose-provider.ts";
-import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState } from "./state.ts";
-import { resolveActiveProvider } from "./resolve-provider.ts";
+import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
+import { resolveSearchProviders } from "./resolve-provider.ts";
+import { canonicalHost } from "./canonical-url.ts";
+import { DEFAULT_SEARCH_MODE, type SearchMode } from "./aggregate-search.ts";
+import { DEFAULT_CLASSIFIER } from "./classifier.ts";
+
+const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
+  choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
+
+const describeBlockedDomains = (domains: readonly string[] | undefined) =>
+  domains?.length ? domains.join(", ") : "nenhum";
+
+/** "https://www.Spam.com/x, foo.test" → ["spam.com", "foo.test"] (sem esquema, www., caminho; sem repetidos). */
+const parseBlockedDomains = (typed: string) => [...new Set(
+  typed.split(/[\s,;]+/)
+    .map((d) => canonicalHost(d.trim().replace(/^[a-z]+:\/\//i, "").replace(/[/?#].*$/, "")))
+    .filter(Boolean),
+)];
 
 // Re-export para compatibilidade com testes e consumers externos.
 export { GooseBuiltinProvider } from "./goose-provider.ts";
-export { resolveActiveProvider } from "./resolve-provider.ts";
 
 // --------------------------------------------------------------------------- //
 // Extension
@@ -55,16 +72,13 @@ export default function webSearchExtension(pi: ExtensionAPI) {
   const state = loadState(statePath);
   let activeProviderOverride: string | undefined = state.activeProvider;
 
-  // Função de resolução: chamada uma vez por search().
-  // Regra: troca de provider no meio de uma busca não afeta a busca em
-  // andamento — só vale da próxima chamada search().
-  const resolveProvider = (): WebSearchProvider => {
+  // Providers da Busca agregada, resolvidos a cada chamada de research:
+  // todos com chave (o ativo primeiro); Goose só sem nenhuma chave.
+  const resolveProviders = (): WebSearchProvider[] => {
     const tavilyKey = resolveKeyFromState(statePath, "tavily");
     const exaKey = resolveKeyFromState(statePath, "exa");
-    return resolveActiveProvider(activeProviderOverride, tavilyKey, exaKey, pi.exec);
+    return resolveSearchProviders(activeProviderOverride, tavilyKey, exaKey, pi.exec);
   };
-
-  const engine = new SearchEngine(resolveProvider);
 
   // --------------------------------------------------------------------------- //
   // Comando TUI: /web-search
@@ -109,6 +123,21 @@ export default function webSearchExtension(pi: ExtensionAPI) {
             exaKey ? "chave configurada" : "sem chave",
           ].filter(Boolean).join(" · "),
         },
+        {
+          value: "mode",
+          label: "Modo de busca",
+          description: `atual: ${loadState(statePath).searchMode ?? DEFAULT_SEARCH_MODE}`,
+        },
+        {
+          value: "classifier",
+          label: "Classificador",
+          description: `atual: ${describeClassifierChoice(loadState(statePath).classifier)}`,
+        },
+        {
+          value: "blocked",
+          label: "Domínios bloqueados",
+          description: `atual: ${describeBlockedDomains(loadState(statePath).blockedDomains)}`,
+        },
       ];
 
       const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
@@ -139,6 +168,50 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       });
 
       if (!selected) return; // cancelou
+
+      if (selected === "mode") {
+        const options = [
+          "agregada — todos os Providers com chave em paralelo (padrão)",
+          "econômica — um Provider por vez; o próximo só em erro ou vazio",
+        ];
+        const choice = await ctx.ui.select("Modo de busca", options);
+        if (!choice) return;
+        const mode: SearchMode = choice.startsWith("econômica") ? "econômica" : "agregada";
+        const latest = loadState(statePath);
+        latest.searchMode = mode;
+        saveState(statePath, latest);
+        ctx.ui.notify(`Modo de busca: ${mode} ✓`, "info");
+        return;
+      }
+
+      if (selected === "classifier") {
+        const available = await ctx.modelRegistry.getAvailableOfType("classifier");
+        const AUTO = "automático — detecta pela lista de preferência (Jev, depois Clef)";
+        const NONE = "nenhum (só regras)";
+        const options = [AUTO, NONE, ...available.map((m) => `${m.provider}/${m.id}`)];
+        const choice = await ctx.ui.select("Classificador", options);
+        if (!choice) return;
+        const picked = available.find((m) => `${m.provider}/${m.id}` === choice);
+        const latest = loadState(statePath);
+        latest.classifier = choice === AUTO ? "auto" : choice === NONE ? "none" : { provider: picked!.provider, id: picked!.id };
+        saveState(statePath, latest);
+        ctx.ui.notify(`Classificador: ${describeClassifierChoice(latest.classifier)} ✓`, "info");
+        return;
+      }
+
+      if (selected === "blocked") {
+        const current = loadState(statePath).blockedDomains ?? [];
+        const typed = await ctx.ui.input(
+          `Domínios bloqueados (além da lista fixa de spam), separados por vírgula; a lista digitada substitui a atual, vazio limpa. Atual: ${describeBlockedDomains(current)}`,
+          current.length ? current.join(", ") : "ex.: fazenda-de-conteudo.com, spam.example",
+        );
+        if (typed === undefined) return;
+        const latest = loadState(statePath);
+        latest.blockedDomains = parseBlockedDomains(typed);
+        saveState(statePath, latest);
+        ctx.ui.notify(`Domínios bloqueados: ${describeBlockedDomains(latest.blockedDomains)} ✓`, "info");
+        return;
+      }
 
       const providerName = selected;
       let apiKey = providerName === "tavily" ? tavilyKey : exaKey;
@@ -250,36 +323,31 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       "Use research para fatos atuais, documentação externa ou conhecimento fora do repositório.",
       "Passe em focus exatamente o que importa para evitar trazer ruído ao contexto.",
       "Use depth=quick por padrão; use deep apenas quando múltiplas buscas/fontes forem necessárias.",
+      "Passe criteria quando o tipo de fonte importa (ex.: relatos de produção, benchmarks, docs oficiais, ou para descartar marketing): 2 a 8 Categorias em ordem de prioridade, ao menos uma sem discard. Omita em pesquisas simples.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "O que deve ser descoberto; não uma query literal." }),
       focus: Type.Optional(Type.String({ description: "O que interessa ao agente pai ou formato desejado." })),
       depth: Type.Optional(Type.Union([Type.Literal("quick"), Type.Literal("deep")], { default: "quick" })),
+      criteria: Type.Optional(Type.Array(Type.Object({
+        category: Type.String({ description: "Nome curto da Categoria de fonte, ex. relato-producao." }),
+        description: Type.String({ description: "Que tipo de fonte pertence a esta Categoria." }),
+        discard: Type.Optional(Type.Boolean({ description: "true = resultados desta Categoria são descartados." })),
+      }), {
+        minItems: 2, maxItems: 8,
+        description: "Critério opcional: 2 a 8 Categorias ordenadas por prioridade (a primeira é a mais importante); ao menos uma sem discard.",
+      })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      try {
-        const synthesis = await runResearch({
-          goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", engine,
-          modelRegistry: ctx.modelRegistry, modelRef: loadState(statePath).researchModel,
-          cwd: ctx.cwd, signal,
-          onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }] }),
-        });
-        return { content: [{ type: "text", text: synthesis }], details: { depth: params.depth ?? "quick", synthesized: true } };
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        onUpdate?.({ content: [{ type: "text", text: "Subagente falhou; buscando fallback sem síntese…" }] });
-        const response = await engine.search(params.goal, { timeoutMs: 60_000 }, signal);
-        const meta = response.telemetry.providerMeta as Record<string, unknown> | undefined;
-        const formatted = response.results.length
-          ? response.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.summary}`).join("\n\n")
-          : (meta?.rawAssistantText as string) || "research: sem resultados.";
-        const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
-        const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
-        return {
-          content: [{ type: "text", text: `[Fallback sem síntese — o subagente falhou: ${error instanceof Error ? error.message : String(error)}]\n\n${truncation.content}${notice}` }],
-          details: { provider: response.provider, query: params.goal, resultCount: response.results.length, fallback: true },
-        };
-      }
+      const state = loadState(statePath);
+      return runResearch({
+        goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", criteria: params.criteria,
+        providers: resolveProviders(), searchMode: state.searchMode ?? DEFAULT_SEARCH_MODE,
+        blockedDomains: state.blockedDomains, classifier: state.classifier ?? DEFAULT_CLASSIFIER,
+        modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
+        cwd: ctx.cwd, signal,
+        onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),
+      });
     },
   });
 }

@@ -178,3 +178,29 @@ test("state: resolveKey — undefined quando não há chave em nenhum lugar", ()
     else delete process.env.EXA_API_KEY;
   }
 });
+
+test("state: searchMode é persistido e valores inválidos são ignorados", () => {
+  const path = join(tmpDir, "state.json");
+  saveState(path, { searchMode: "econômica", keys: {} });
+  assert.equal(loadState(path).searchMode, "econômica");
+  saveState(path, { searchMode: "turbo", keys: {} });
+  assert.equal("searchMode" in loadState(path), false);
+});
+
+test("state: blockedDomains é persistido; entradas não-string são ignoradas", () => {
+  const path = join(tmpDir, "state.json");
+  saveState(path, { blockedDomains: ["fazenda.test", 3, "spam.test"], keys: {} });
+  assert.deepEqual(loadState(path).blockedDomains, ["fazenda.test", "spam.test"]);
+  saveState(path, { blockedDomains: "x", keys: {} });
+  assert.equal("blockedDomains" in loadState(path), false);
+});
+
+test("state: escolha do classificador é persistida (auto | none | {provider,id}); valor inválido é ignorado", () => {
+  const path = join(tmpDir, "state.json");
+  for (const classifier of ["auto", "none", { provider: "openrouter", id: "typesafe/jev-1.14" }]) {
+    saveState(path, { keys: {}, classifier });
+    assert.deepEqual(loadState(path).classifier, classifier);
+  }
+  writeFileSync(path, JSON.stringify({ keys: {}, classifier: { provider: 1 } }));
+  assert.equal(loadState(path).classifier, undefined);
+});

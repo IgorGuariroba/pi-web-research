@@ -1,4 +1,6 @@
 import { isIP } from "node:net";
+import { Readability } from "@mozilla/readability";
+import { parseHTML } from "linkedom";
 
 const PRIVATE_HOSTS = new Set(["localhost", "localhost.localdomain"]);
 const HTML_ENTITIES: Record<string, string> = {
@@ -45,21 +47,61 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+/** Limpa a página com Readability (sem menu/rodapé/navegação); se falhar, conversão simples. */
+export function readableText(html: string): string {
+  try {
+    const { document } = parseHTML(html);
+    const article = new Readability(document as unknown as Document).parse();
+    const text = article?.content ? htmlToText(article.content) : "";
+    if (text) return article?.title && !text.startsWith(article.title) ? `${article.title}\n${text}` : text;
+  } catch {
+    // cai na conversão simples
+  }
+  return htmlToText(html);
+}
+
 export function truncatePage(text: string, maxChars = 50_000): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n\n[conteúdo truncado]`;
 }
 
-export async function fetchPage(rawUrl: string, signal?: AbortSignal): Promise<{ url: string; text: string }> {
-  const url = validateFetchUrl(rawUrl);
+/** Leitura recusada por ser PDF (não consome o orçamento de leituras). */
+export class UnsupportedPdfError extends Error {
+  constructor() { super("fetch_url: PDF não suportado; tente outra fonte (HTML, texto ou JSON)."); this.name = "UnsupportedPdfError"; }
+}
+
+const isPdfUrl = (url: URL) => /\.pdf$/i.test(url.pathname);
+
+/** Porta de HTTP injetável (assinatura do fetch global). */
+export type HttpFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+const MAX_REDIRECTS = 5;
+/** Teto do texto limpo antes da Extração focada. */
+const MAX_PAGE_CHARS = 500_000;
+
+export async function fetchPage(rawUrl: string, signal?: AbortSignal, httpFetch: HttpFetch = fetch): Promise<{ url: string; text: string }> {
+  let url = validateFetchUrl(rawUrl);
+  if (isPdfUrl(url)) throw new UnsupportedPdfError();
   const timeout = AbortSignal.timeout(20_000);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const response = await fetch(url, {
-    signal: combined,
-    redirect: "error",
-    headers: { "user-agent": "pi-research-agent/1.0", accept: "text/html,text/plain,application/json" },
-  });
+  let response: Response;
+  for (let hops = 0; ; hops++) {
+    response = await httpFetch(url.href, {
+      signal: combined,
+      redirect: "manual",
+      headers: { "user-agent": "pi-research-agent/1.0", accept: "text/html,text/plain,application/json" },
+    });
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+    if (!location) break;
+    await response.body?.cancel();
+    if (hops >= MAX_REDIRECTS) throw new Error(`fetch_url: mais de ${MAX_REDIRECTS} redirects.`);
+    // Cada salto é revalidado contra host local e IP privado (SSRF).
+    url = validateFetchUrl(new URL(location, url).href);
+    if (isPdfUrl(url)) throw new UnsupportedPdfError();
+  }
   if (!response.ok) throw new Error(`fetch_url: HTTP ${response.status}`);
-  const body = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
-  return { url: url.href, text: truncatePage(contentType.includes("html") ? htmlToText(body) : body) };
+  if (/pdf/i.test(contentType)) { await response.body?.cancel(); throw new UnsupportedPdfError(); }
+  const body = await response.text();
+  if (body.startsWith("%PDF-")) throw new UnsupportedPdfError();
+  return { url: url.href, text: truncatePage(contentType.includes("html") ? readableText(body) : body, MAX_PAGE_CHARS) };
 }

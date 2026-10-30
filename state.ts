@@ -8,6 +8,10 @@
  * Formato:
  *   {
  *     activeProvider?: "tavily" | "exa" | "goose",
+ *     researchModel?: { provider, id },
+ *     searchMode?: SearchMode ("agregada" | "econômica"),
+ *     blockedDomains?: string[],
+ *     classifier?: ClassifierChoice ("auto" | "none" | { provider, id }),
  *     keys?: { tavily?: string, exa?: string }
  *   }
  *
@@ -17,6 +21,8 @@
 
 import { existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { SearchMode } from "./aggregate-search.ts";
+import type { ClassifierChoice } from "./classifier.ts";
 
 // --------------------------------------------------------------------------- //
 // Tipos
@@ -27,6 +33,12 @@ export type ProviderName = "tavily" | "exa" | "goose";
 export interface WebSearchState {
   activeProvider?: ProviderName;
   researchModel?: { provider: string; id: string };
+  /** Modo de busca: `agregada` (padrão) ou `econômica`. */
+  searchMode?: SearchMode;
+  /** Domínios cortados como spam, além da lista fixa. */
+  blockedDomains?: string[];
+  /** Classificador: `auto` (padrão, detecção), `none` (só regras) ou um modelo específico. */
+  classifier?: ClassifierChoice;
   keys?: {
     tavily?: string;
     exa?: string;
@@ -100,11 +112,22 @@ export function loadState(filePath: string): WebSearchState {
       ...(researchModel && typeof researchModel.provider === "string" && typeof researchModel.id === "string"
         ? { researchModel }
         : {}),
+      ...(parsed.searchMode === "agregada" || parsed.searchMode === "econômica" ? { searchMode: parsed.searchMode } : {}),
+      ...(Array.isArray(parsed.blockedDomains)
+        ? { blockedDomains: parsed.blockedDomains.filter((d): d is string => typeof d === "string") }
+        : {}),
+      ...(isClassifierChoice(parsed.classifier) ? { classifier: parsed.classifier } : {}),
       keys: parsed.keys ?? {},
     };
   } catch {
     return empty;
   }
+}
+
+function isClassifierChoice(value: unknown): value is WebSearchState["classifier"] {
+  if (value === "auto" || value === "none") return true;
+  const ref = value as { provider?: unknown; id?: unknown } | null;
+  return typeof ref === "object" && ref !== null && typeof ref.provider === "string" && typeof ref.id === "string";
 }
 
 // --------------------------------------------------------------------------- //
