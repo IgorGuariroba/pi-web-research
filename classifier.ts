@@ -101,17 +101,23 @@ export const questionKeys = (i: number) => ({ offTopic: `r${i}_offtopic`, level:
 export const passageKey = (i: number) => `p${i}_relevant`;
 
 /**
- * Rótulos de choice das Categorias (sem acento/espaço) → Categoria original.
- * Inclui `outros`. Rótulo colidido vira `c<índice>`.
+ * Rótulos de choice das Categorias (sem acento/espaço) → Categoria original,
+ * na ordem do Critério, mais `outros`. Mapeamento único: slug repetido, vazio
+ * ou `outros` ganha `c<n>` livre (nunca o slug de outra Categoria).
  */
 export function categoryLabels(criteria: readonly Criterion[]): Map<string, string> {
+  const slugs = criteria.map((criterion) => criterion.category.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, ""));
+  const used = new Set<string>([OTHER_CATEGORY]);
+  const own = slugs.map((slug) => (slug && !used.has(slug) ? (used.add(slug), slug) : undefined));
+  let next = 0;
+  const free = () => {
+    while (used.has(`c${next}`)) next++;
+    used.add(`c${next}`);
+    return `c${next}`;
+  };
   const labels = new Map<string, string>();
-  criteria.forEach((criterion, i) => {
-    const slug = criterion.category.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-    const label = slug && slug !== OTHER_CATEGORY && !labels.has(slug) ? slug : `c${i}`;
-    labels.set(label, criterion.category);
-  });
+  criteria.forEach((criterion, i) => labels.set(own[i] ?? free(), criterion.category));
   labels.set(OTHER_CATEGORY, OTHER_CATEGORY);
   return labels;
 }

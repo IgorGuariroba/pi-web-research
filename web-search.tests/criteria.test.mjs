@@ -195,3 +195,26 @@ test("adaptador do Pi pergunta a Categoria na mesma classify e aplica descarte e
     assert.deepEqual(jev.calls[0].state.criteria.map((c) => c.category), ["relato-producao", "benchmark", "marketing"]);
   });
 });
+
+// Review Codex (P2): rótulos de Categoria no adaptador são únicos — o rótulo
+// gerado para uma Categoria sem slug (ex. `日常`) não pode apagar outra (`c1`).
+test("adaptador do Pi: Categorias com rótulos que colidiriam continuam distintas", async () => {
+  const tricky = [
+    { category: "c1", description: "primeira" },
+    { category: "日常", description: "cotidiano" },
+    { category: "c2", description: "terceira" },
+    { category: "日本", description: "japão" },
+  ];
+  const urls = ["https://a.test/1", "https://b.test/2", "https://c.test/3", "https://d.test/4"];
+  const jev = registryClassifier("openrouter", "typesafe/jev-1.14", Object.fromEntries(urls.map((u, i) => [u, { category: tricky[i].category }])));
+  await withResearch({
+    providers: [fakeProvider("tavily", urls.map((u, i) => r(u, `T${i}`)))],
+    classifier: "auto", registryClassifiers: [jev],
+  }, async (h) => {
+    await h.run({ goal: "Bun em produção", criteria: tricky });
+    const [seen] = h.llm.toolResults();
+    tricky.forEach((c, i) => assert.match(seen, new RegExp(`T${i} \\[${c.category} · blog · tavily\\]`)));
+    const choices = Object.values(jev.calls[0].questions).find((q) => q.type === "choice" && "outros" in q.criteria).criteria;
+    assert.equal(Object.keys(choices).length, tricky.length + 1);
+  });
+});
