@@ -1,7 +1,8 @@
 // Busca agregada (ticket #3), exercitada pelo núcleo de Research.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setupResearch, turn, fakeProvider, failingProvider, emptyProvider, r, textOf } from "./research-harness.mjs";
+import { setupResearch, turn, fakeProvider, failingProvider, emptyProvider, fakeClassifier, r, textOf } from "./research-harness.mjs";
+import { gooseResponseFromText } from "../goose-adapter.ts";
 
 const modelRef = { provider: "fake-llm", id: "fake-model" };
 
@@ -143,4 +144,44 @@ test("Fallback cru usa a Busca agregada sem duplicatas", () =>
     assert.equal(result.details.provider, "tavily+exa");
     assert.deepEqual(result.details.funnel, { found: 4, unique: 3, duplicates: 1, spam: 0 });
     assert.equal(h.progress.includes("4 resultados → 3 únicos → 3 após descarte (0 spam)"), true);
+  }));
+
+// Review Codex (P1): o texto cru do Goose só serve quando ele não produziu
+// resultados estruturados; nunca para desfazer a curadoria (spam, Fora do tema,
+// Critério) — nem no web_search do subagente nem no Fallback cru.
+const gooseWith = (text) => ({
+  name: "goose:computercontroller", calls: [],
+  async search(query) { this.calls.push(query); return gooseResponseFromText(text, "goose:computercontroller", 1); },
+});
+const gooseJson = (url) => gooseWith(JSON.stringify([{ url, title: "Descartável", summary: "CONTEUDO_QUE_DEVERIA_SAIR" }]));
+const discardCases = [
+  { name: "spam", url: "https://www.pinterest.com/pin/1", setup: {} },
+  { name: "Fora do tema", url: "https://off.test/x", setup: { classifier: fakeClassifier(() => ({ offTopic: 0.99 })) } },
+  {
+    name: "Critério", url: "https://promo.test/x",
+    setup: { classifier: fakeClassifier(() => ({ category: "marketing" })) },
+    params: { criteria: [{ category: "docs", description: "documentação" }, { category: "marketing", description: "promo", discard: true }] },
+  },
+];
+for (const c of discardCases) {
+  test(`goose: descarte por ${c.name} não volta pelo texto cru no web_search`, () =>
+    withResearch({ providers: [gooseJson(c.url)], script: [turn.search("q"), turn.text("fim")], ...c.setup }, async (h) => {
+      await h.run({ goal: "G", ...c.params });
+      const [seen] = h.llm.toolResults();
+      assert.doesNotMatch(seen, /CONTEUDO_QUE_DEVERIA_SAIR/);
+      assert.match(seen, /Sem resultados\./);
+    }));
+  test(`goose: descarte por ${c.name} não volta pelo texto cru no Fallback cru`, () =>
+    withResearch({ providers: [gooseJson(c.url)], script: [turn.error(400, "quebrou")], ...c.setup }, async (h) => {
+      const result = await h.run({ goal: "G", ...c.params });
+      assert.equal(result.details.fallback, true);
+      assert.doesNotMatch(textOf(result), /CONTEUDO_QUE_DEVERIA_SAIR/);
+      assert.match(textOf(result), /research: sem resultados\./);
+    }));
+}
+
+test("goose sem resultados estruturados: o texto cru continua chegando ao subagente", () =>
+  withResearch({ providers: [gooseWith("Resposta livre do goose sem URLs.")], script: [turn.search("q"), turn.text("fim")] }, async (h) => {
+    await h.run({ goal: "G" });
+    assert.match(h.llm.toolResults()[0], /Resposta livre do goose sem URLs\./);
   }));

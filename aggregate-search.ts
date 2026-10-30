@@ -30,7 +30,10 @@ export interface AggregatedSearch {
   /** Providers que responderam com sucesso. */
   providers: string[];
   warnings: string[];
-  /** Texto cru do Goose (quando sem resultados estruturados). */
+  /**
+   * Texto cru do Goose, só quando nenhum Provider produziu resultados
+   * estruturados (nunca serve para desfazer a curadoria deles).
+   */
   rawText?: string;
 }
 
@@ -96,6 +99,6 @@ export async function aggregateSearch(
     found,
     providers: responses.map((r) => r.name),
     warnings: failures,
-    rawText: responses.map((r) => r.rawText).find(Boolean),
+    rawText: found ? undefined : responses.map((r) => r.rawText).find(Boolean),
   };
 }
