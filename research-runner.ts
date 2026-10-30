@@ -24,8 +24,9 @@ import { aggregateSearch, type AggregatedResult, type SearchMode } from "./aggre
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { focusedExtract } from "./focused-extract.ts";
 import {
-  curateByRules, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, subjectTerms, type LeveledResult,
+  curateByRules, isSpam, levelLabel, MAX_RESULTS_PER_SEARCH, shortSnippet, sortByLevel, subjectTerms, type LeveledResult,
 } from "./source-level.ts";
+import { detectClassifier, OFF_TOPIC_THRESHOLD, type Classifier, type ClassifierChoice } from "./classifier.ts";
 import { correctionMessage, ReadSources, removeUnreadCitations, unreadCitations } from "./read-sources.ts";
 import { buildResearchPrompt, createResearchBudget, getResearchLimits, type ResearchDepth } from "./research.ts";
 
@@ -41,6 +42,11 @@ export interface RunResearchOptions {
   searchMode?: SearchMode;
   /** Domínios cortados como spam, além da lista fixa. */
   blockedDomains?: readonly string[];
+  /**
+   * Classificador: instância injetada, ou escolha salva (`auto` detecta pelo model
+   * registry; `none` = só regras). Padrão: `auto`.
+   */
+  classifier?: Classifier | ClassifierChoice;
   /** Porta de HTTP para leitura de páginas (padrão: fetch global). */
   fetch?: HttpFetch;
   modelRegistry: ModelRegistry;
@@ -91,14 +97,53 @@ interface Funnel {
   duplicates: number;
   /** Resultados descartados como spam. */
   spam: number;
+  /** Resultados descartados como Fora do tema (só com classificador). */
+  offTopic?: number;
 }
 
-const emptyFunnel = (): Funnel => ({ found: 0, unique: 0, duplicates: 0, spam: 0 });
+const emptyFunnel = (classifier: Classifier | undefined): Funnel =>
+  ({ found: 0, unique: 0, duplicates: 0, spam: 0, ...(classifier ? { offTopic: 0 } : {}) });
 
 interface ResearchRun {
   options: RunResearchOptions;
   funnel: Funnel;
   searchWarnings: string[];
+  classifier?: Classifier;
+  classifierCost: number;
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Curadoria por classificador: spam fixo/blockedDomains sai sem gastar o
+ * classificador; uma chamada julga o resto (Fora do tema e Nível). Em falha,
+ * devolve undefined (a busca cai nas regras).
+ */
+async function curateByClassifier(run: ResearchRun, classifier: Classifier, query: string, results: readonly AggregatedResult[], signal?: AbortSignal) {
+  const { options } = run;
+  const kept = results.filter((result) => !isSpam(result.url, options.blockedDomains));
+  let spam = results.length - kept.length;
+  let offTopic = 0;
+  if (!kept.length) return { results: [] as LeveledResult[], spam, offTopic };
+  try {
+    const { judgements, costUsd } = await classifier.judgeResults(
+      { goal: options.goal, focus: options.focus, query, results: kept.map(({ url, title, summary }) => ({ url, title, summary })) },
+      signal,
+    );
+    run.classifierCost += costUsd;
+    const leveled: LeveledResult[] = [];
+    kept.forEach((result, i) => {
+      const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
+      if (judgement.offTopic > OFF_TOPIC_THRESHOLD) offTopic++;
+      else if (judgement.level === "spam") spam++;
+      else leveled.push({ ...result, level: judgement.level });
+    });
+    return { results: sortByLevel(leveled), spam, offTopic };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorText(error)}; usando regras`);
+    return undefined;
+  }
 }
 
 const label = (result: LeveledResult) => `${result.title} ${levelLabel(result)}`;
@@ -107,19 +152,25 @@ const label = (result: LeveledResult) => `${result.title} ${levelLabel(result)}`
 async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   const { options, funnel } = run;
   const response = await aggregateSearch(options.providers, query, options.searchMode ?? "agregada", signal);
-  const curated = curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
+  const judged = run.classifier ? await curateByClassifier(run, run.classifier, query, response.results, signal) : undefined;
+  const curated = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
   funnel.found += response.found;
   funnel.unique += response.results.length;
   funnel.duplicates = funnel.found - funnel.unique;
   funnel.spam += curated.spam;
+  if (funnel.offTopic !== undefined) funnel.offTopic += judged?.offTopic ?? 0;
   run.searchWarnings.push(...response.warnings);
-  const kept = funnel.unique - funnel.spam;
-  options.onProgress?.(`${funnel.found} resultados → ${funnel.unique} únicos → ${kept} após descarte (${funnel.spam} spam)`);
+  const kept = funnel.unique - funnel.spam - (funnel.offTopic ?? 0);
+  const discarded = funnel.offTopic === undefined ? `${funnel.spam} spam` : `${funnel.spam} spam, ${funnel.offTopic} fora do tema`;
+  options.onProgress?.(`${funnel.found} resultados → ${funnel.unique} únicos → ${kept} após descarte (${discarded})`);
   return { ...response, results: curated.results.slice(0, MAX_RESULTS_PER_SEARCH) };
 }
 
 function funnelDetails(run: ResearchRun) {
-  const details: Record<string, unknown> = { searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel } };
+  const details: Record<string, unknown> = {
+    searchMode: run.options.searchMode ?? "agregada", funnel: { ...run.funnel },
+    classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
+  };
   if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
   return details;
 }
@@ -237,7 +288,7 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   const { options } = run;
   options.onProgress?.("Subagente falhou; buscando fallback sem síntese…");
   // Contadores do Fallback cru descrevem só a busca do fallback.
-  run.funnel = emptyFunnel();
+  run.funnel = emptyFunnel(run.classifier);
   run.searchWarnings = [];
   const response = await search(run, options.goal, options.signal);
   const formatted = response.results.length
@@ -262,7 +313,11 @@ const UNVERIFIED_NOTICE =
 export async function runResearch(options: RunResearchOptions): Promise<ResearchResult> {
   const model = chooseResearchModel(options.modelRegistry, options.modelRef, options.parentModel);
   const researchModel = model ? `${model.provider}/${model.id}` : undefined;
-  const run: ResearchRun = { options, funnel: emptyFunnel(), searchWarnings: [] };
+  const choice = options.classifier ?? "auto";
+  const classifier = typeof choice === "object" && "judgeResults" in choice
+    ? choice
+    : await detectClassifier(options.modelRegistry, choice);
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier), searchWarnings: [], classifier, classifierCost: 0 };
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
     const outcome = await runSubagent(run, model);

@@ -11,6 +11,7 @@
  *     researchModel?: { provider, id },
  *     searchMode?: "agregada" | "econômica",
  *     blockedDomains?: string[],
+ *     classifier?: "auto" | "none" | { provider, id },
  *     keys?: { tavily?: string, exa?: string }
  *   }
  *
@@ -34,6 +35,8 @@ export interface WebSearchState {
   searchMode?: "agregada" | "econômica";
   /** Domínios cortados como spam, além da lista fixa. */
   blockedDomains?: string[];
+  /** Classificador: `auto` (padrão, detecção), `none` (só regras) ou um modelo específico. */
+  classifier?: "auto" | "none" | { provider: string; id: string };
   keys?: {
     tavily?: string;
     exa?: string;
@@ -111,11 +114,18 @@ export function loadState(filePath: string): WebSearchState {
       ...(Array.isArray(parsed.blockedDomains)
         ? { blockedDomains: parsed.blockedDomains.filter((d): d is string => typeof d === "string") }
         : {}),
+      ...(isClassifierChoice(parsed.classifier) ? { classifier: parsed.classifier } : {}),
       keys: parsed.keys ?? {},
     };
   } catch {
     return empty;
   }
+}
+
+function isClassifierChoice(value: unknown): value is WebSearchState["classifier"] {
+  if (value === "auto" || value === "none") return true;
+  const ref = value as { provider?: unknown; id?: unknown } | null;
+  return typeof ref === "object" && ref !== null && typeof ref.provider === "string" && typeof ref.id === "string";
 }
 
 // --------------------------------------------------------------------------- //
