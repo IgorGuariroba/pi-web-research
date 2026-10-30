@@ -278,6 +278,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       return runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick",
         providers: resolveProviders(), searchMode: state.searchMode ?? "agregada",
+        blockedDomains: state.blockedDomains,
         modelRegistry: ctx.modelRegistry, modelRef: state.researchModel, parentModel: ctx.model,
         cwd: ctx.cwd, signal,
         onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),
