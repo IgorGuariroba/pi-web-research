@@ -9,19 +9,13 @@
  *   EXA_API_KEY=exa-... node --experimental-strip-types raw-exa-search.test.mjs
  */
 
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { resolveKey } from "../state.ts";
-
-const STATE_PATH = join(homedir(), ".pi", "agent", "extensions", "web-search", "state.json");
-const API_KEY = resolveKey(STATE_PATH, "exa") || process.env.EXA_API_KEY;
+// Rede opt-in: somente credencial explicitamente fornecida pelo ambiente.
+const API_KEY = process.env.EXA_API_KEY;
 
 if (!API_KEY || API_KEY.startsWith("<COLE")) {
   console.error("ERRO: EXA_API_KEY não configurada.");
   console.error("");
-  console.error("Resolva com uma das opções:");
-  console.error("  1) export EXA_API_KEY=...");
-  console.error("  2) Use /web-search na TUI para configurar");
+  console.error("Forneça EXA_API_KEY explicitamente no ambiente para habilitar este teste de rede.");
   process.exit(1);
 }
 
@@ -32,7 +26,6 @@ const QUERY = "resultado jogo Brasil hoje 2026";
 
 console.log(`Provider: ${provider.name}`);
 console.log(`Query:    ${QUERY}`);
-console.log(`Key:      ${API_KEY.slice(0, 8)}...`);
 console.log("");
 
 const start = Date.now();

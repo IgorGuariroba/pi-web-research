@@ -1,30 +1,38 @@
 // Categoria: resolve-active-provider — já coberto.
 // Categoria: TUI /web-search — teste do fluxo do comando.
 // Mock de ctx.ui e state; testa a lógica do handler sem TUI real.
-import { test } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSearchProviders } from "../resolve-provider.ts";
 import { loadState, saveState, resolveKey } from "../state.ts";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
 
-const STATE_DIR = join(homedir(), ".pi", "agent", "extensions", "web-search");
-const STATE_PATH = join(STATE_DIR, "state.json");
+let stateDir;
+let statePath;
+beforeEach((t) => {
+  stateDir = mkdtempSync(join(tmpdir(), "ws-tui-"));
+  statePath = join(stateDir, "state.json");
+  for (const name of ["TAVILY_API_KEY", "EXA_API_KEY"]) {
+    const original = process.env[name];
+    delete process.env[name];
+    t.after(() => {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    });
+  }
+});
+afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
 // Mock do exec (goose provider)
 const mockExec = async () => ({ stdout: "{}", stderr: "", code: 0 });
 
-test("TUI: sem hasUI — resolveProvider usa state.json default", () => {
-  // Se hasUI=false, o handler do comando não é chamado (guard).
-  // O resolveProvider usa o state.json normalmente.
-  const state = loadState(STATE_PATH);
-  const tavilyKey = resolveKey(STATE_PATH, "tavily");
-  const exaKey = resolveKey(STATE_PATH, "exa");
-  const providers = resolveSearchProviders(state.activeProvider, tavilyKey, exaKey, mockExec);
-  // Deve ter algum provider (não crashar)
-  assert.ok(providers.length);
-  for (const provider of providers) assert.ok(["tavily", "exa", "goose:computercontroller"].includes(provider.name));
+test("estado vazio e sem chaves usa somente o fallback Goose", () => {
+  const state = loadState(statePath);
+  const providers = resolveSearchProviders(state.activeProvider,
+    resolveKey(statePath, "tavily"), resolveKey(statePath, "exa"), mockExec);
+  assert.deepEqual(providers.map((p) => p.name), ["goose:computercontroller"]);
 });
 
 test("TUI: com hasUI — handler espera select/input (mock)", async () => {
@@ -54,18 +62,14 @@ test("TUI: com hasUI — handler espera select/input (mock)", async () => {
   assert.equal(inputCalls.length, 1);
 });
 
-test("TUI: flow de salvar provider em state.json", () => {
-  // Simula o que o handler faz: salva em state.json.
-  const tmpDir = join(homedir(), ".pi", "agent", "extensions", "web-search");
-  try {
-    const state = loadState(STATE_PATH);
-    const original = { ...state };
-    saveState(STATE_PATH, { ...state, activeProvider: "exa" });
-    const loaded = loadState(STATE_PATH);
-    assert.equal(loaded.activeProvider, "exa");
-    // Restaura
-    saveState(STATE_PATH, original);
-  } catch {
-    // state.json pode não existir em CI; ok
-  }
+test("salvar provider preserva chaves e prioriza Exa na Busca agregada", () => {
+  saveState(statePath, { activeProvider: "tavily", keys: { tavily: "fake-tavily", exa: "fake-exa" } });
+  const state = loadState(statePath);
+  saveState(statePath, { ...state, activeProvider: "exa" });
+  const loaded = loadState(statePath);
+  assert.equal(loaded.activeProvider, "exa");
+  assert.deepEqual(loaded.keys, { tavily: "fake-tavily", exa: "fake-exa" });
+  const providers = resolveSearchProviders(loaded.activeProvider,
+    resolveKey(statePath, "tavily"), resolveKey(statePath, "exa"), mockExec);
+  assert.deepEqual(providers.map((p) => p.name), ["exa", "tavily"]);
 });
