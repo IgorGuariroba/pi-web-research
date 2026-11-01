@@ -3,53 +3,22 @@
  *
  * Instancia o TavilyProvider direto, chama search() com uma query real,
  * e imprime o SearchResult[] completo. Este é o teste que prova que:
- *   1. A chave está acessível no ambiente persistente
+ *   1. A chave foi fornecida explicitamente no ambiente
  *   2. A API do Tavily responde com dados reais
  *   3. O mapeamento SearchResult está correto (title, url, summary)
  *
  * Uso:
  *   cd ~/.pi/agent/extensions/web-search/web-search.tests
- *   node --experimental-strip-types raw-provider-search.test.mjs
+ *   TAVILY_API_KEY=... node --experimental-strip-types raw-provider-search.test.mjs
  *
- * A chave é lida de: TAVILY_API_KEY (env) ou ~/.pi/agent/settings.json (env.TAVILY_API_KEY).
+ * Rede opt-in: a chave é lida somente de TAVILY_API_KEY (env).
  */
 
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-// ---------------------------------------------------------------------------
-// Resolve a chave (mesma lógica do extension, duplicada para independência)
-// ---------------------------------------------------------------------------
-
-function resolveTavilyKey() {
-  if (process.env.TAVILY_API_KEY) return process.env.TAVILY_API_KEY;
-  try {
-    const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
-    const raw = readFileSync(settingsPath, "utf-8");
-    const settings = JSON.parse(raw);
-    const env = settings.env;
-    if (env?.TAVILY_API_KEY) return env.TAVILY_API_KEY;
-  } catch {
-    // segue
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-const API_KEY = resolveTavilyKey();
+const API_KEY = process.env.TAVILY_API_KEY;
 if (!API_KEY || API_KEY.startsWith("<COLE")) {
   console.error("ERRO: TAVILY_API_KEY não configurada.");
   console.error("");
-  console.error("Resolva com uma das opções:");
-  console.error("  1) export TAVILY_API_KEY=tvly-...");
-  console.error("  2) Adicione ao ~/.pi/agent/settings.json:");
-  console.error('     "env": { "TAVILY_API_KEY": "tvly-..." }');
-  console.error("");
-  console.error("Depois de rotacionar a chave em https://app.tavily.com/");
+  console.error("Forneça TAVILY_API_KEY explicitamente no ambiente para habilitar este teste de rede.");
   process.exit(1);
 }
 
@@ -61,7 +30,6 @@ const QUERY = "resultado jogo Brasil hoje 2026";
 
 console.log(`Provider: ${provider.name}`);
 console.log(`Query:    ${QUERY}`);
-console.log(`Key:      ${API_KEY.slice(0, 8)}...`);
 console.log("");
 
 const start = Date.now();

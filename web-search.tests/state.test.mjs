@@ -2,8 +2,7 @@
 // Trata o arquivo inteiro como secreto: permissões 0600, diretório-pai 0700.
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, statSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { mkdirSync, rmSync, chmodSync } from "node:fs";
+import { existsSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -12,8 +11,7 @@ import { loadState, saveState, initSecureStateFile, resolveKey } from "../state.
 // Cada teste usa um diretório temporário isolado.
 let tmpDir;
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `ws-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), "ws-state-"));
 });
 afterEach(() => {
   if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
