@@ -19,7 +19,7 @@
  *   state.json.keys.<provider> → process.env.<PROVIDER>_API_KEY
  */
 
-import { existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SearchMode } from "./aggregate-search.ts";
 import type { ClassifierChoice } from "./classifier.ts";
@@ -39,6 +39,8 @@ export interface WebSearchState {
   blockedDomains?: string[];
   /** Classificador: `auto` (padrão, detecção), `none` (só regras) ou um modelo específico. */
   classifier?: ClassifierChoice;
+  /** Último teste, nunca garantia de disponibilidade atual; sem resposta ou erro bruto. */
+  classifierValidation?: { model: string; testedAt: string; ok: boolean };
   keys?: {
     tavily?: string;
     exa?: string;
@@ -117,6 +119,10 @@ export function loadState(filePath: string): WebSearchState {
         ? { blockedDomains: parsed.blockedDomains.filter((d): d is string => typeof d === "string") }
         : {}),
       ...(isClassifierChoice(parsed.classifier) ? { classifier: parsed.classifier } : {}),
+      ...(parsed.classifierValidation && typeof parsed.classifierValidation.model === "string"
+        && typeof parsed.classifierValidation.testedAt === "string" && typeof parsed.classifierValidation.ok === "boolean"
+        ? { classifierValidation: { model: parsed.classifierValidation.model, testedAt: parsed.classifierValidation.testedAt, ok: parsed.classifierValidation.ok } }
+        : {}),
       keys: parsed.keys ?? {},
     };
   } catch {

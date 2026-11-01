@@ -33,20 +33,19 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { SelectItem } from "@earendil-works/pi-tui";
+import { classifierStatus, configureClassifier } from "./classifier-settings.ts";
 import { runResearch } from "./research-runner.ts";
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
-import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, PROVIDER_ENV_MAP, type WebSearchState } from "./state.ts";
+import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, PROVIDER_ENV_MAP } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
 import { canonicalHost } from "./canonical-url.ts";
 import { DEFAULT_SEARCH_MODE, type SearchMode } from "./aggregate-search.ts";
 import { DEFAULT_CLASSIFIER } from "./classifier.ts";
 import { HttpSearchError, isAuthError } from "./http-search-provider.ts";
-
-const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
-  choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
 
 const describeBlockedDomains = (domains: readonly string[] | undefined) =>
   domains?.length ? domains.join(", ") : "nenhum";
@@ -72,6 +71,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 
   const state = loadState(statePath);
   let activeProviderOverride: string | undefined = state.activeProvider;
+  let lastClassifierUsage: string | undefined;
 
   // Providers da Busca agregada, resolvidos a cada chamada de research:
   // todos com chave (o ativo primeiro); Goose só sem nenhuma chave.
@@ -99,7 +99,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       }
 
       const { DynamicBorder } = await import("@earendil-works/pi-coding-agent");
-      const { Container, Input, SelectItem, SelectList, Spacer, Text } = await import("@earendil-works/pi-tui");
+      const { Container, Input, SelectList, Spacer, Text } = await import("@earendil-works/pi-tui");
 
       // Lê estado atual
       const tavilyKey = resolveKeyFromState(statePath, "tavily");
@@ -136,12 +136,19 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         {
           value: "classifier",
           label: "Classificador",
-          description: `atual: ${describeClassifierChoice(loadState(statePath).classifier)}`,
+          description: [await classifierStatus(ctx, loadState(statePath)), lastClassifierUsage && `última pesquisa nesta sessão: ${lastClassifierUsage}`].filter(Boolean).join(" · "),
         },
         {
           value: "blocked",
           label: "Domínios bloqueados",
           description: `atual: ${describeBlockedDomains(loadState(statePath).blockedDomains)}`,
+        },
+        {
+          value: "research-model",
+          label: "Modelo de pesquisa",
+          description: loadState(statePath).researchModel
+            ? `atual: ${loadState(statePath).researchModel!.provider}/${loadState(statePath).researchModel!.id}`
+            : "automático — modelo barato disponível, depois modelo do Agente pai",
         },
       ];
 
@@ -174,6 +181,39 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 
       if (!selected) return; // cancelou
 
+      const selectResearchModel = async () => {
+        const models = ctx.modelRegistry.getAvailable();
+        if (models.length === 0) {
+          ctx.ui.notify("Nenhum modelo disponível para o subagente. Conecte um provider pelo /login do Pi.", "warning");
+          return;
+        }
+        const modelItems: SelectItem[] = models.map((model) => ({
+          value: `${model.provider}\u0000${model.id}`,
+          label: model.name ?? model.id,
+          description: `${model.provider}/${model.id}`,
+        }));
+        const selectedModel = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+          const list = new SelectList(modelItems, Math.min(modelItems.length, 12), {
+            selectedPrefix: (t: string) => theme.fg("accent", t),
+            selectedText: (t: string) => theme.fg("accent", t),
+            description: (t: string) => theme.fg("muted", t),
+            scrollInfo: (t: string) => theme.fg("dim", t),
+            noMatch: (t: string) => theme.fg("warning", t),
+          });
+          list.onSelect = (item: SelectItem) => done(item.value);
+          list.onCancel = () => done(null);
+          return { render: (w: number) => list.render(w), invalidate: () => list.invalidate(), handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); } };
+        });
+        if (!selectedModel) return;
+        const [provider, id] = selectedModel.split("\u0000");
+        const latest = loadState(statePath);
+        latest.researchModel = { provider, id };
+        saveState(statePath, latest);
+        ctx.ui.notify(`Modelo de pesquisa: ${provider}/${id} ✓`, "info");
+      };
+
+      if (selected === "research-model") return selectResearchModel();
+
       if (selected === "mode") {
         const options = [
           "agregada — todos os Providers com chave em paralelo (padrão)",
@@ -189,20 +229,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (selected === "classifier") {
-        const available = await ctx.modelRegistry.getAvailableOfType("classifier");
-        const AUTO = "automático — detecta pela lista de preferência (Jev, depois Clef)";
-        const NONE = "nenhum (só regras)";
-        const options = [AUTO, NONE, ...available.map((m) => `${m.provider}/${m.id}`)];
-        const choice = await ctx.ui.select("Classificador", options);
-        if (!choice) return;
-        const picked = available.find((m) => `${m.provider}/${m.id}` === choice);
-        const latest = loadState(statePath);
-        latest.classifier = choice === AUTO ? "auto" : choice === NONE ? "none" : { provider: picked!.provider, id: picked!.id };
-        saveState(statePath, latest);
-        ctx.ui.notify(`Classificador: ${describeClassifierChoice(latest.classifier)} ✓`, "info");
-        return;
-      }
+      if (selected === "classifier") return configureClassifier(ctx, statePath);
 
       if (selected === "blocked") {
         const current = loadState(statePath).blockedDomains ?? [];
@@ -218,6 +245,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         return;
       }
 
+      if (selected !== "tavily" && selected !== "exa") return;
       const providerName = selected;
       const envName = PROVIDER_ENV_MAP[providerName];
       let apiKey = providerName === "tavily" ? tavilyKey : exaKey;
@@ -246,15 +274,15 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       while (true) {
         // Passo 2: Sem chave ou troca solicitada, pede via Input.
         if (!apiKey) {
-          apiKey = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+          apiKey = await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => {
             const container = new Container();
             container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
             container.addChild(new Text(theme.fg("accent", theme.bold(`Cole a chave ${envName}:`)), 1, 1));
             container.addChild(new Spacer(1));
 
             const input = new Input();
-            input.onSubmit = (value: string) => done(value || null);
-            input.onEscape = () => done(null);
+            input.onSubmit = (value: string) => done(value || undefined);
+            input.onEscape = () => done(undefined);
             container.addChild(input);
             container.addChild(new Spacer(1));
             container.addChild(new Text(theme.fg("dim", "enter confirmar • esc cancelar"), 1, 0));
@@ -298,7 +326,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
             continue;
           }
           // Sem validação bem-sucedida, nunca substitui a credencial anterior.
-          ctx.ui.notify(`Validação falhou; chave anterior preservada (pode ser temporário): ${msg}`, "warn");
+          ctx.ui.notify(`Validação falhou; chave anterior preservada (pode ser temporário): ${msg}`, "warning");
           return;
         }
 
@@ -315,37 +343,9 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       // Efetiva ao vivo reescrevendo o override em memória
       activeProviderOverride = providerName;
 
-      ctx.ui.notify(`Provider ativo: ${providerName} ✓`, "success");
+      ctx.ui.notify(`Provider ativo: ${providerName} ✓`, "info");
 
-      const models = ctx.modelRegistry.getAvailable();
-      if (models.length === 0) {
-        ctx.ui.notify("Nenhum modelo disponível para o subagente.", "warn");
-        return;
-      }
-      const modelItems: SelectItem[] = models.map((model) => ({
-        value: `${model.provider}\u0000${model.id}`,
-        label: model.name ?? model.id,
-        description: `${model.provider}/${model.id}`,
-      }));
-      const selectedModel = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-        const list = new SelectList(modelItems, Math.min(modelItems.length, 12), {
-          selectedPrefix: (t: string) => theme.fg("accent", t),
-          selectedText: (t: string) => theme.fg("accent", t),
-          description: (t: string) => theme.fg("muted", t),
-          scrollInfo: (t: string) => theme.fg("dim", t),
-          noMatch: (t: string) => theme.fg("warning", t),
-        });
-        list.onSelect = (item: SelectItem) => done(item.value);
-        list.onCancel = () => done(null);
-        return { render: (w: number) => list.render(w), invalidate: () => list.invalidate(), handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); } };
-      });
-      if (selectedModel) {
-        const [provider, id] = selectedModel.split("\u0000");
-        const latest = loadState(statePath);
-        latest.researchModel = { provider, id };
-        saveState(statePath, latest);
-        ctx.ui.notify(`Modelo de pesquisa: ${provider}/${id} ✓`, "success");
-      }
+      await selectResearchModel();
     },
   });
 
@@ -375,7 +375,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const state = loadState(statePath);
-      return runResearch({
+      const result = await runResearch({
         goal: params.goal, focus: params.focus, depth: params.depth ?? "quick", criteria: params.criteria,
         providers: resolveProviders(), searchMode: state.searchMode ?? DEFAULT_SEARCH_MODE,
         blockedDomains: state.blockedDomains, classifier: state.classifier ?? DEFAULT_CLASSIFIER,
@@ -383,6 +383,11 @@ export default function webSearchExtension(pi: ExtensionAPI) {
         cwd: ctx.cwd, signal,
         onProgress: (message) => onUpdate?.({ content: [{ type: "text", text: message }], details: {} }),
       });
+      if (typeof result.details.classifierUsageText === "string") {
+        lastClassifierUsage = result.details.classifierUsageText;
+        if (ctx.hasUI) ctx.ui.notify(lastClassifierUsage, "info");
+      }
+      return result;
     },
   });
 }

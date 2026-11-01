@@ -8,7 +8,7 @@ import type { Criterion } from "./criteria.ts";
 
 /** Classificação de uma Fonte lida: Nível e, com Critério ativo, Categoria. */
 export interface SourceLabel {
-  level: string;
+  level: import("./source-level.ts").SourceLevel;
   category?: string;
 }
 

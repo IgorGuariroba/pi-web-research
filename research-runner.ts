@@ -26,7 +26,7 @@ import type { SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { classifyRead, discardedReadNotice, focusPage, search, titledLabel } from "./curation.ts";
 import {
-  criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ReadDiscardReason, type ResearchRun,
+  classifierUsageText, criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ReadDiscardReason, type ResearchRun,
 } from "./research-run.ts";
 import { isSpam, shortSnippet, sourceLevel, subjectTerms } from "./source-level.ts";
 import { DEFAULT_CLASSIFIER, detectClassifier, type Classifier, type ClassifierChoice } from "./classifier.ts";
@@ -134,7 +134,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   };
   const discardRead = (url: string, reason: ReadDiscardReason) => {
     run.discardedReads.push({ url, reason });
-    return { content: [{ type: "text" as const, text: `URL final: ${url}\n\n${discardedReadNotice(reason)}` }] };
+    return { content: [{ type: "text" as const, text: `URL final: ${url}\n\n${discardedReadNotice(reason)}` }], details: undefined };
   };
 
   // IMPORTANTE: reutiliza o ModelRuntime do agente pai. Sem isso, o SDK cria um
@@ -143,12 +143,14 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   // falharia com "No API key found for <provider>".
   const parentRuntime = (options.modelRegistry as unknown as { runtime?: unknown }).runtime;
 
-  const webSearchTool: ToolDefinition<any> = {
+  const searchParameters = Type.Object({ query: Type.String() });
+  const fetchParameters = Type.Object({ url: Type.String() });
+  const webSearchTool: ToolDefinition<typeof searchParameters> = {
     name: "web_search", label: "Web Search",
     description: "Busca a web. Use queries específicas; prefira fontes primárias.",
-    parameters: Type.Object({ query: Type.String() }),
+    parameters: searchParameters,
     async execute(_id, params, toolSignal) {
-      if (!budget.consumeSearch()) return { content: [{ type: "text", text: "Orçamento de buscas esgotado. Produza a síntese final agora." }] };
+      if (!budget.consumeSearch()) return { content: [{ type: "text", text: "Orçamento de buscas esgotado. Produza a síntese final agora." }], details: undefined };
       options.onProgress?.(`Buscando: ${params.query}`);
       queries.push(params.query);
       const result = await search(run, params.query, toolSignal);
@@ -158,17 +160,17 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       const list = result.results.map((r, i) => `${i + 1}. ${titledLabel(r)}\n${r.url}\n${shortSnippet(r.summary)}`).join("\n\n")
         || result.rawText || "Sem resultados.";
       const warnings = result.warnings.map((w) => `Aviso: ${w}`).join("\n");
-      return { content: [{ type: "text", text: warnings ? `${warnings}\n\n${list}` : list }] };
+      return { content: [{ type: "text", text: warnings ? `${warnings}\n\n${list}` : list }], details: undefined };
     },
   };
-  const fetchUrlTool: ToolDefinition<any> = {
+  const fetchUrlTool: ToolDefinition<typeof fetchParameters> = {
     name: "fetch_url", label: "Fetch URL",
     description: "Lê uma página HTTP(S) pública e retorna texto truncado.",
-    parameters: Type.Object({ url: Type.String() }),
+    parameters: fetchParameters,
     async execute(_id, params, toolSignal) {
       // Domínio spam/bloqueado: nem busca a página (e não gasta orçamento).
       if (isSpam(params.url, options.blockedDomains)) return discardRead(params.url, "spam");
-      if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }] };
+      if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }], details: undefined };
       options.onProgress?.(`Lendo fonte: ${params.url}`);
       let page: Awaited<ReturnType<typeof fetchPage>>;
       try {
@@ -181,7 +183,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       if (typeof sourceLabel === "string") return discardRead(page.url, sourceLabel);
       sources.add(params.url, page.url, sourceLabel);
       const text = await focusPage(run, page.text, queries, toolSignal);
-      return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }] };
+      return { content: [{ type: "text", text: `URL final: ${page.url}\n\n${text}` }], details: undefined };
     },
   };
 
@@ -232,6 +234,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       answer = textOfLastAssistant(session.messages) || answer;
     }
     const { text, removed } = verifySources(answer, sources, run.criteria);
+    options.onProgress?.(classifierUsageText(run));
     options.onProgress?.(`${run.funnel.found} resultados → ${keptCount(run.funnel)} após descarte → ${sources.size} lidos`);
     return {
       text, sourcesRead: sources.size, removedCitations: removed,
@@ -260,6 +263,7 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   const truncation = truncateHead(formatted, { maxLines: Number.MAX_SAFE_INTEGER });
   const notice = truncation.truncated ? `\n\n[${formatSize(DEFAULT_MAX_BYTES)} limit reached]` : "";
   const criteria = criteriaNotice(run);
+  options.onProgress?.(classifierUsageText(run));
   return {
     content: [{ type: "text", text: `${criteria.text ? `[${criteria.text}]\n` : ""}[Fallback sem síntese — o subagente falhou: ${errorMessage(error)}]\n${warnings}\n${truncation.content}${notice}` }],
     details: {
@@ -282,7 +286,10 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
     ? choice
     : await detectClassifier(options.modelRegistry, choice);
   const criteria = classifier ? options.criteria : undefined;
-  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, criteria, judgeFailures: 0, offTopicDiscarded: [], discardedReads: [] };
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, classifierSuccessfulCalls: 0, classifierFailedCalls: 0, criteria, judgeFailures: 0, offTopicDiscarded: [], discardedReads: [] };
+  options.onProgress?.(classifier
+    ? `Classificador disponível: ${classifier.name} — uso ainda não comprovado nesta pesquisa.`
+    : "Classificador indisponível ou desativado — fallback por regras.");
   try {
     if (!model) throw new Error("Modelo de pesquisa indisponível; configure-o em /web-search.");
     const outcome = await runSubagent(run, model);

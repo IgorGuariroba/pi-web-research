@@ -26,6 +26,32 @@ test("resultado Fora do tema é descartado e contado nos details", () =>
     assert.equal(result.details.funnel.offTopic, 1);
   }));
 
+test("limiar de Fora do tema mantém 0,70 e descarta acima de 0,70, com auditoria", () =>
+  withResearch({
+    providers: [fakeProvider("tavily", [r("https://limite.test/x", "Limite"), r("https://fora.test/x", "Fora")])],
+    classifier: fakeClassifier({ "https://limite.test/x": { offTopic: 0.7 }, "https://fora.test/x": { offTopic: 0.71 } }),
+  }, async (h) => {
+    const result = await h.run({ goal: "React hooks" });
+    assert.match(h.llm.toolResults()[0], /Limite/);
+    assert.doesNotMatch(h.llm.toolResults()[0], /Fora/);
+    assert.deepEqual(result.details.offTopicDiscarded, [{ url: "https://fora.test/x", offTopic: 0.71 }]);
+  }));
+
+test("uso efetivo mostra Jev e fallback por regras quando uma classificação posterior falha", async () => {
+  const classifier = fakeClassifier({}, { name: "openrouter/typesafe/jev-1.14" });
+  const original = classifier.judgeResults;
+  let calls = 0;
+  classifier.judgeResults = (...args) => ++calls === 1 ? original(...args) : Promise.reject(Error("cota esgotada"));
+  await withResearch({
+    providers: [fakeProvider("tavily", [r("https://react.dev/learn", "Learn")])],
+    classifier, script: [turn.search("um"), turn.search("dois"), turn.text("fim")],
+  }, async (h) => {
+    const result = await h.run({ goal: "React hooks" });
+    assert.deepEqual(result.details.classifierUsage, { model: "openrouter/typesafe/jev-1.14", successfulCalls: 1, failedCalls: 1, rulesFallback: true });
+    assert.ok(h.progress.some((message) => /Jev usado.*fallback por regras.*uso parcial/.test(message)));
+  });
+});
+
 test("Nível vem do classificador (substitui as regras) e spam do classificador sai", () =>
   withResearch({
     providers: [fakeProvider("tavily", [
@@ -99,6 +125,9 @@ test("sem classificador: Nível das regras, details com classificador nenhum e s
     assert.equal(result.details.classifier, "nenhum");
     assert.equal(result.details.classifierCost, 0);
     assert.equal(result.details.funnel.offTopic, undefined);
+    assert.equal(result.details.classifierUsage.successfulCalls, 0);
+    assert.equal(result.details.classifierUsage.rulesFallback, true);
+    assert.ok(h.progress.some((message) => /fallback por regras/.test(message)));
   }));
 
 test("falha do classificador: a busca cai nas regras, com aviso", () =>
