@@ -57,6 +57,17 @@ export function isTransient(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/** Preserva o status HTTP independentemente da mensagem devolvida pelo provider. */
+export class HttpSearchError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "HttpSearchError";
+    this.status = status;
+  }
+}
+
 export function isAuthError(status: number): boolean {
   return status === 401 || status === 403;
 }

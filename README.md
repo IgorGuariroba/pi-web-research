@@ -53,7 +53,7 @@ Em sessões do Pi já abertas, rode `/reload` para carregar a extensão.
 
 Use o comando `/web-search` na TUI para:
 
-1. **Provider** — escolher Tavily ou Exa e colar a chave de API (validada antes de salvar). Com as duas chaves, ambas entram na Busca agregada; o Goose (CLI) só é usado quando nenhum provider tem chave.
+1. **Provider** — escolher Tavily ou Exa e colar a chave de API (validada antes de salvar). Para providers configurados, oferece **Usar chave atual**, **Trocar chave** e **Remover chave salva/desconectar**. Cancelar a troca ou falhar na validação preserva a chave anterior; em HTTP 401/403, é possível trocar a chave ou voltar ao menu. Com as duas chaves, ambas entram na Busca agregada; o Goose (CLI) só é usado quando nenhum provider tem chave.
 2. **Modelo de pesquisa** — escolher o modelo do subagente (oferecido logo após configurar um provider). Sem escolha salva, usa o primeiro modelo barato disponível (Haiku → Flash → mini) e, na falta, o modelo atual do agente pai.
 3. **Modo de busca** — `agregada` (padrão: todos os providers com chave em paralelo) ou `econômica` (um provider por vez; o próximo só em erro ou resultado vazio, para poupar cota).
 4. **Classificador** — `automático` (padrão), um modelo classificador específico ou `nenhum (só regras)`.
@@ -71,6 +71,8 @@ As credenciais e preferências ficam em `~/.pi/agent/extensions/web-search/state
   "blockedDomains": ["fazenda-de-conteudo.com"]
 }
 ```
+
+O menu informa a origem da credencial: `state.json` ou variável de ambiente. A chave salva tem prioridade; removê-la faz valer `TAVILY_API_KEY`/`EXA_API_KEY`, se definida. Nesse caso o provider continua disponível, e é necessário remover a variável de ambiente para desconectá-lo por completo.
 
 ### Variáveis de ambiente
 

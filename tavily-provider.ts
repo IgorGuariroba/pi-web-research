@@ -14,7 +14,7 @@
  */
 
 import type { SearchOptions, SearchResponse, SearchResult, WebSearchProvider } from "./search-types.ts";
-import { backoff, isTransient, isAbort, MAX_RETRIES } from "./http-search-provider.ts";
+import { backoff, isTransient, isAbort, MAX_RETRIES, HttpSearchError } from "./http-search-provider.ts";
 
 const BASE_URL = "https://api.tavily.com/search";
 
@@ -84,14 +84,15 @@ export class TavilyProvider implements WebSearchProvider {
           continue;
         }
         const body = await res.json().catch(() => ({}));
-        throw new Error(
+        throw new HttpSearchError(
           `tavily: HTTP ${res.status} após ${MAX_RETRIES} tentativas — ${body.error || res.statusText}`,
+          res.status,
         );
       }
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(`tavily: ${body.error || `HTTP ${res.status}`}`);
+        throw new HttpSearchError(`tavily: ${body.error || `HTTP ${res.status}`}`, res.status);
       }
 
       const data = await res.json();

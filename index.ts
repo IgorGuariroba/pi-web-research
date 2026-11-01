@@ -38,11 +38,12 @@ import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WebSearchProvider } from "./search-types.ts";
-import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, type WebSearchState } from "./state.ts";
+import { initSecureStateFile, loadState, saveState, resolveKey as resolveKeyFromState, PROVIDER_ENV_MAP, type WebSearchState } from "./state.ts";
 import { resolveSearchProviders } from "./resolve-provider.ts";
 import { canonicalHost } from "./canonical-url.ts";
 import { DEFAULT_SEARCH_MODE, type SearchMode } from "./aggregate-search.ts";
 import { DEFAULT_CLASSIFIER } from "./classifier.ts";
+import { HttpSearchError, isAuthError } from "./http-search-provider.ts";
 
 const describeClassifierChoice = (choice: WebSearchState["classifier"]) =>
   choice === undefined || choice === "auto" ? "automático" : choice === "none" ? "nenhum (só regras)" : `${choice.provider}/${choice.id}`;
@@ -85,13 +86,13 @@ export default function webSearchExtension(pi: ExtensionAPI) {
   //
   // Mostra seletor de provider (Tavily e Exa; Goose fora do menu) usando
   // SelectList. Permite colar chave via ctx.ui.custom com Input. Valida a
-  // chave com search() de teste. 401 → avisa e não salva. Grava em
+  // chave com search() de teste. 401/403 → permite trocar ou voltar ao menu. Grava em
   // state.json e efetiva ao vivo. Em headless (hasUI false) → notifica.
   // --------------------------------------------------------------------------- //
 
   pi.registerCommand("web-search", {
     description: "Configurar provider de web search (Tavily / Exa)",
-    handler: async (_args, ctx) => {
+    handler: async function configure(_args, ctx) {
       if (!ctx.hasUI) {
         ctx.ui?.notify?.("Comando /web-search disponível apenas no modo TUI.", "info");
         return;
@@ -104,6 +105,10 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       const tavilyKey = resolveKeyFromState(statePath, "tavily");
       const exaKey = resolveKeyFromState(statePath, "exa");
 
+      const savedKeys = loadState(statePath).keys;
+      const describeKey = (provider: "tavily" | "exa", key: string | undefined) =>
+        savedKeys?.[provider] ? "chave salva (state.json)" : key ? `chave via ${PROVIDER_ENV_MAP[provider]}` : "sem chave";
+
       // Passo 1: Seleção do provider via SelectList
       const currentProvider = activeProviderOverride ?? loadState(statePath).activeProvider;
       const items: SelectItem[] = [
@@ -112,7 +117,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
           label: "Tavily",
           description: [
             currentProvider === "tavily" ? "✓ ativo" : null,
-            tavilyKey ? "chave configurada" : "sem chave",
+            describeKey("tavily", tavilyKey),
           ].filter(Boolean).join(" · "),
         },
         {
@@ -120,7 +125,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
           label: "Exa",
           description: [
             currentProvider === "exa" ? "✓ ativo" : null,
-            exaKey ? "chave configurada" : "sem chave",
+            describeKey("exa", exaKey),
           ].filter(Boolean).join(" · "),
         },
         {
@@ -214,60 +219,90 @@ export default function webSearchExtension(pi: ExtensionAPI) {
       }
 
       const providerName = selected;
+      const envName = PROVIDER_ENV_MAP[providerName];
       let apiKey = providerName === "tavily" ? tavilyKey : exaKey;
 
-      // Passo 2: Se não tem chave, pede via Input
-      if (!apiKey) {
-        const envName = providerName === "tavily" ? "TAVILY_API_KEY" : "EXA_API_KEY";
-        apiKey = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-          const container = new Container();
-          container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-          container.addChild(new Text(theme.fg("accent", theme.bold(`Cole a chave ${envName}:`)), 1, 1));
-          container.addChild(new Spacer(1));
-
-          const input = new Input();
-          input.onSubmit = (value: string) => done(value || null);
-          input.onEscape = () => done(null);
-          container.addChild(input);
-          container.addChild(new Spacer(1));
-          container.addChild(new Text(theme.fg("dim", "enter confirmar • esc cancelar"), 1, 0));
-          container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-          return {
-            render: (w: number) => container.render(w),
-            invalidate: () => container.invalidate(),
-            handleInput: (data: string) => { input.handleInput(data); tui.requestRender(); },
-          };
-        });
-
-        if (!apiKey?.trim()) {
-          ctx.ui.notify("Operação cancelada — chave vazia.", "info");
+      if (apiKey) {
+        const action = await ctx.ui.select(`Credencial ${providerName}`, [
+          "Usar chave atual",
+          "Trocar chave",
+          "Remover chave salva/desconectar",
+        ]);
+        if (!action) return;
+        if (action === "Remover chave salva/desconectar") {
+          const latest = loadState(statePath);
+          delete latest.keys?.[providerName as "tavily" | "exa"];
+          if (latest.activeProvider === providerName) delete latest.activeProvider;
+          saveState(statePath, latest);
+          activeProviderOverride = latest.activeProvider;
+          ctx.ui.notify(resolveKeyFromState(statePath, providerName)
+            ? `Chave salva removida. ${providerName} continua disponível via ${envName}; remova a variável de ambiente para desconectar.`
+            : `Chave salva removida: ${providerName} desconectado.`, "info");
           return;
         }
-        apiKey = apiKey.trim();
+        if (action === "Trocar chave") apiKey = undefined;
       }
 
-      // Passo 3: Valida a chave com um search() de teste
-      ctx.ui.notify(`Validando chave ${providerName}...`, "info");
-      let testProvider;
-      if (providerName === "tavily") {
-        const { TavilyProvider } = await import("./tavily-provider.ts");
-        testProvider = new TavilyProvider(apiKey);
-      } else {
-        const { ExaProvider } = await import("./exa-provider.ts");
-        testProvider = new ExaProvider(apiKey);
-      }
+      while (true) {
+        // Passo 2: Sem chave ou troca solicitada, pede via Input.
+        if (!apiKey) {
+          apiKey = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+            const container = new Container();
+            container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+            container.addChild(new Text(theme.fg("accent", theme.bold(`Cole a chave ${envName}:`)), 1, 1));
+            container.addChild(new Spacer(1));
 
-      try {
-        await testProvider.search("test validation query", { timeoutMs: 15_000 });
-      } catch (err: any) {
-        const msg = err?.message ?? String(err);
-        if (msg.includes("401") || msg.includes("Invalid API key") || msg.includes("Unauthorized")) {
-          ctx.ui.notify(`Chave inválida (${providerName}): ${msg}`, "error");
-          return; // Não salva
+            const input = new Input();
+            input.onSubmit = (value: string) => done(value || null);
+            input.onEscape = () => done(null);
+            container.addChild(input);
+            container.addChild(new Spacer(1));
+            container.addChild(new Text(theme.fg("dim", "enter confirmar • esc cancelar"), 1, 0));
+            container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+            return {
+              render: (w: number) => container.render(w),
+              invalidate: () => container.invalidate(),
+              handleInput: (data: string) => { input.handleInput(data); tui.requestRender(); },
+            };
+          });
+
+          if (!apiKey?.trim()) {
+            ctx.ui.notify("Operação cancelada — chave vazia.", "info");
+            return;
+          }
+          apiKey = apiKey.trim();
         }
-        // Outros erros (rede, timeout) — avisa mas permite salvar
-        ctx.ui.notify(`Aviso: validação falhou (pode ser temporário): ${msg}`, "warn");
+
+        // Passo 3: Valida a chave com um search() de teste
+        ctx.ui.notify(`Validando chave ${providerName}...`, "info");
+        let testProvider;
+        if (providerName === "tavily") {
+          const { TavilyProvider } = await import("./tavily-provider.ts");
+          testProvider = new TavilyProvider(apiKey);
+        } else {
+          const { ExaProvider } = await import("./exa-provider.ts");
+          testProvider = new ExaProvider(apiKey);
+        }
+
+        try {
+          await testProvider.search("test validation query", { timeoutMs: 15_000 });
+        } catch (err: any) {
+          const msg = err?.message ?? String(err);
+          if (err instanceof HttpSearchError && isAuthError(err.status)) {
+            ctx.ui.notify(`Chave inválida (${providerName}): ${msg}`, "error");
+            const recovery = await ctx.ui.select("Falha de autenticação", ["Trocar chave", "Voltar ao menu"]);
+            if (recovery === "Voltar ao menu") return configure(_args, ctx);
+            if (recovery !== "Trocar chave") return;
+            apiKey = undefined;
+            continue;
+          }
+          // Sem validação bem-sucedida, nunca substitui a credencial anterior.
+          ctx.ui.notify(`Validação falhou; chave anterior preservada (pode ser temporário): ${msg}`, "warn");
+          return;
+        }
+
+        break;
       }
 
       // Passo 4: Salva em state.json

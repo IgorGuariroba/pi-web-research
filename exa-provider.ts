@@ -21,7 +21,7 @@
  */
 
 import type { SearchOptions, SearchResponse, SearchResult, WebSearchProvider } from "./search-types.ts";
-import { backoff, isTransient, isAbort, MAX_RETRIES } from "./http-search-provider.ts";
+import { backoff, isTransient, isAbort, MAX_RETRIES, HttpSearchError } from "./http-search-provider.ts";
 
 const BASE_URL = "https://api.exa.ai/search";
 
@@ -90,7 +90,7 @@ export class ExaProvider implements WebSearchProvider {
       // --- 401/403: auth error → throw imediato (determinístico) ---
       if (res.status === 401 || res.status === 403) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(`exa: ${body.error || `HTTP ${res.status}`}`);
+        throw new HttpSearchError(`exa: ${body.error || `HTTP ${res.status}`}`, res.status);
       }
 
       // --- 429/5xx: transient → retry com backoff ---
@@ -100,15 +100,16 @@ export class ExaProvider implements WebSearchProvider {
           continue;
         }
         const body = await res.json().catch(() => ({}));
-        throw new Error(
+        throw new HttpSearchError(
           `exa: HTTP ${res.status} após ${MAX_RETRIES} tentativas — ${body.error || res.statusText}`,
+          res.status,
         );
       }
 
       // --- outros erros HTTP ---
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(`exa: ${body.error || `HTTP ${res.status}`}`);
+        throw new HttpSearchError(`exa: ${body.error || `HTTP ${res.status}`}`, res.status);
       }
 
       // --- parse ---

@@ -46,7 +46,7 @@ export interface WebSearchState {
 }
 
 /** Env var name para cada provider (fallback quando state.json não tem a chave). */
-const PROVIDER_ENV_MAP: Record<string, string> = {
+export const PROVIDER_ENV_MAP: Readonly<Record<string, string>> = {
   tavily: "TAVILY_API_KEY",
   exa: "EXA_API_KEY",
 };
