@@ -6,6 +6,10 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      security-patch-minor:
+        applies-to: security-updates
+        patterns: ['*']
+        update-types: [minor, patch]
       production-dependencies:
         dependency-type: production
         update-types: [minor, patch]

@@ -1,0 +1,37 @@
+name: Dependabot security auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: >-
+      github.repository == 'IgorGuariroba/pi-web-research' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Never check out or execute code from the PR in this privileged workflow.
+      # Default verification requires Dependabot-authored, signed commits.
+      - name: Verify Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
+      - name: Enable auto-merge only for grouped npm security patches/minors
+        if: >-
+          steps.metadata.outputs.package-ecosystem == 'npm_and_yarn' &&
+          steps.metadata.outputs.dependency-group == 'security-patch-minor' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"
