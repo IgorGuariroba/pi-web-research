@@ -2,6 +2,9 @@
   "name": "@igor-guari/pi-web-research",
   "version": "0.2.1",
   "type": "module",
+  "scripts": {
+    "test": "node scripts/test.mjs"
+  },
   "description": "Extensão de pesquisa web para o Pi Coding Agent — delega buscas a um subagente isolado e devolve apenas a síntese, protegendo o contexto do agente principal",
   "keywords": [
     "pi-package",
