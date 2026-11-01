@@ -142,7 +142,16 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
   /** Uma `classify` do registry; rejeita se o modelo não terminou normalmente. */
   const classify = async (context: { state: unknown; questions: Record<string, unknown> }, signal?: AbortSignal) => {
     const response = await registry.classify(model, context as never, { signal });
-    if (response.stopReason !== "stop") throw new Error(response.errorMessage ?? `classificador: ${response.stopReason}`);
+    if (response.stopReason !== "stop") throw new Error(`classificador: ${response.stopReason}; verifique autenticação, cota e acesso ao modelo`);
+    for (const [key, question] of Object.entries(context.questions)) {
+      const answer = response.answers?.[key];
+      const expected = question as { type: string; criteria: Record<string, string> };
+      if (!answer || answer.type !== expected.type
+        || (answer.type === "bool" && (!Number.isFinite(answer.probability) || answer.probability < 0 || answer.probability > 1))
+        || (answer.type === "choice" && !Object.hasOwn(expected.criteria, answer.choice))) {
+        throw new Error("classificador retornou resposta incompleta ou inválida");
+      }
+    }
     return response;
   };
   return {
@@ -236,12 +245,17 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
  * Resolve o Classificador da escolha salva: `none` → sem classificador;
  * `{provider,id}` → esse, se disponível; `auto` → primeiro da preferência disponível.
  */
-export async function detectClassifier(registry: ModelRegistry, choice: ClassifierChoice = DEFAULT_CLASSIFIER): Promise<Classifier | undefined> {
+export async function detectClassifier(
+  registry: ModelRegistry,
+  choice: ClassifierChoice = DEFAULT_CLASSIFIER,
+  options: { throwOnRegistryError?: boolean } = {},
+): Promise<Classifier | undefined> {
   if (choice === "none") return undefined;
   let available: readonly ClassifierModel[];
   try {
     available = (await registry.getAvailableOfType("classifier")) as readonly ClassifierModel[];
-  } catch {
+  } catch (error) {
+    if (options.throwOnRegistryError) throw error;
     return undefined;
   }
   const find = (provider: string, id: string) => available.find((m) => m.provider === provider && m.id === id);

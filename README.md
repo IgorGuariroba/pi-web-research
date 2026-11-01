@@ -54,12 +54,22 @@ Em sessões do Pi já abertas, rode `/reload` para carregar a extensão.
 Use o comando `/web-search` na TUI para:
 
 1. **Provider** — escolher Tavily ou Exa e colar a chave de API (validada antes de salvar). Para providers configurados, oferece **Usar chave atual**, **Trocar chave** e **Remover chave salva/desconectar**. Cancelar a troca ou falhar na validação preserva a chave anterior; em HTTP 401/403, é possível trocar a chave ou voltar ao menu. Com as duas chaves, ambas entram na Busca agregada; o Goose (CLI) só é usado quando nenhum provider tem chave.
-2. **Modelo de pesquisa** — escolher o modelo do subagente (oferecido logo após configurar um provider). Sem escolha salva, usa o primeiro modelo barato disponível (Haiku → Flash → mini) e, na falta, o modelo atual do agente pai.
+2. **Modelo de pesquisa** — entrada independente para escolher ou trocar o modelo do subagente sem reconfigurar providers ou revalidar chaves. Cancelar preserva a escolha anterior. Também é oferecido após configurar um provider. Sem escolha salva, usa o primeiro modelo barato disponível (Haiku → Flash → mini) e, na falta, o modelo atual do agente pai.
 3. **Modo de busca** — `agregada` (padrão: todos os providers com chave em paralelo) ou `econômica` (um provider por vez; o próximo só em erro ou resultado vazio, para poupar cota).
-4. **Classificador** — `automático` (padrão), um modelo classificador específico ou `nenhum (só regras)`.
+4. **Classificador** — conectar Jev pelo login nativo do Pi, validar a conexão com uma chamada real, escolher `automático` (padrão), um modelo específico ou `nenhum (só regras)`. A entrada mostra status de configuração, provider/modelo e o último teste, quando houver.
 5. **Domínios bloqueados** — lista extra de domínios tratados como spam (além da lista fixa), separados por vírgula; subdomínios também são bloqueados. A lista digitada substitui a atual; vazio limpa.
 
-As credenciais e preferências ficam em `~/.pi/agent/extensions/web-search/state.json`, criado com permissão `0600`:
+### Conectar Jev (OpenRouter ou TypeSafe)
+
+1. `/web-search` → **Classificador** → **Conectar Jev** → escolha **OpenRouter** ou **TypeSafe**.
+2. A extensão prepara `/login openrouter` ou `/login typesafe` no editor. Confirme o comando e conclua o login nativo do Pi com a chave do provider. Não é necessário editar o model registry.
+3. Volte a `/web-search` → **Classificador** → **Validar conexão**. O teste faz uma classificação real (pode ter custo), com timeout de 15s. Uma resposta incompleta ou um erro não contam como validação.
+
+Alternativamente, inicie o Pi com `OPENROUTER_API_KEY` ou `TYPESAFE_API_KEY`. As credenciais do Classificador são gerenciadas pelo Pi (`auth.json`/ambiente); **não** são salvas no estado da extensão. A escolha fica separada do Modelo de pesquisa e das chaves Tavily/Exa.
+
+O status distingue **não configurado**, **configurado — não validado**, **conexão validada** (com data do último teste, sem garantia de disponibilidade atual), **indisponível/erro** e **desativado (só regras)**. Em cada pesquisa, o progresso e a notificação final informam **Jev usado**, **outro classificador usado** ou **fallback por regras**, inclusive em falhas parciais. Os `details.classifierUsage` registram chamadas bem-sucedidas, falhas e fallback; o menu também mostra o uso da última pesquisa na sessão.
+
+As credenciais dos providers de busca e preferências ficam em `~/.pi/agent/extensions/web-search/state.json`, criado com permissão `0600`:
 
 ```json
 {
@@ -134,6 +144,27 @@ Fontes
 Não encontrado
 - benchmark: benchmarks independentes e reproduzíveis
 ```
+
+## Validação
+
+```sh
+npm ci
+npm test
+```
+
+A suíte usa HOME descartável e não faz buscas reais. O comparativo real da #13 e suas limitações estão em [docs/measurements/issue-13.md](docs/measurements/issue-13.md). A recalibração com Jev autenticado continua pendente; esta versão não altera o limiar de Fora do tema (0,7) nem o timeout do `deep` (180s).
+
+### Hook de pré-commit
+
+Ative o hook versionado uma vez em cada clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+O hook executa `git diff --cached --check` (whitespace e marcadores de conflito adicionados) e `npm test`, bloqueando o commit em caso de falha. Requer as dependências instaladas e Node.js 24, como no CI.
+
+Os testes validam a árvore de trabalho, incluindo alterações ainda não staged. O CI continua sendo a validação independente dos hooks locais.
 
 ## Licença
 

@@ -40,6 +40,8 @@ export interface ResearchRun {
   searchWarnings: string[];
   classifier?: Classifier;
   classifierCost: number;
+  classifierSuccessfulCalls: number;
+  classifierFailedCalls: number;
   /** Critério ativo (só com classificador; sem ele o Critério é ignorado). */
   criteria?: readonly Criterion[];
   /** Julgamentos de resultados/páginas que caíram nas regras por falha do classificador. */
@@ -79,14 +81,35 @@ export function recordOffTopic(run: ResearchRun, url: string, offTopic: number) 
  */
 export function classifierFailed(run: ResearchRun, classifier: Classifier, error: unknown, signal: AbortSignal | undefined, judging: boolean) {
   if (signal?.aborted) throw error;
+  run.classifierFailedCalls++;
   run.searchWarnings.push(`classificador ${classifier.name} falhou: ${errorMessage(error)}; usando regras`);
+  run.options.onProgress?.(`Classificador ${classifier.name} falhou — fallback por regras nesta etapa.`);
   if (judging) run.judgeFailures++;
+}
+
+export function classifierUsage(run: ResearchRun) {
+  return {
+    model: run.classifier?.name ?? "nenhum",
+    successfulCalls: run.classifierSuccessfulCalls,
+    failedCalls: run.classifierFailedCalls,
+    rulesFallback: !run.classifier || run.classifierFailedCalls > 0,
+  };
+}
+
+export function classifierUsageText(run: ResearchRun): string {
+  const usage = classifierUsage(run);
+  const used = usage.successfulCalls > 0
+    ? `${/jev/i.test(usage.model) ? "Jev usado" : "outro classificador usado"} (${usage.model}, ${usage.successfulCalls} chamadas)`
+    : "nenhum classificador efetivamente usado";
+  return `${used}${usage.rulesFallback ? " · fallback por regras" : ""}${usage.failedCalls ? ` (${usage.failedCalls} falhas; uso parcial)` : ""}`;
 }
 
 export function funnelDetails(run: ResearchRun) {
   const details: Record<string, unknown> = {
     searchMode: run.options.searchMode ?? DEFAULT_SEARCH_MODE, funnel: { ...run.funnel },
     classifier: run.classifier?.name ?? "nenhum", classifierCost: run.classifierCost,
+    classifierUsage: classifierUsage(run),
+    classifierUsageText: classifierUsageText(run),
   };
   if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
   if (run.discardedReads.length) details.discardedReads = [...run.discardedReads];

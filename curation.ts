@@ -38,6 +38,7 @@ async function curateByClassifier(run: ResearchRun, classifier: Classifier, quer
       signal,
     );
     run.classifierCost += costUsd;
+    run.classifierSuccessfulCalls++;
     const leveled: CuratedResult[] = [];
     kept.forEach((result, i) => {
       const judgement = judgements[i] ?? { offTopic: 0, level: "blog" as const };
@@ -88,7 +89,7 @@ export async function search(run: ResearchRun, query: string, signal?: AbortSign
   const { options, funnel } = run;
   const response = await aggregateSearch(options.providers, query, options.searchMode ?? DEFAULT_SEARCH_MODE, signal);
   const judged = run.classifier ? await curateByClassifier(run, run.classifier, query, response.results, signal) : undefined;
-  const curated = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
+  const curated: { results: CuratedResult[]; spam: number } = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
   funnel.found += response.found;
   funnel.unique += response.results.length;
   funnel.duplicates = funnel.found - funnel.unique;
@@ -121,6 +122,7 @@ export async function focusPage(run: ResearchRun, text: string, queries: readonl
       { goal: options.goal, focus: options.focus, query: queries.at(-1), passages: candidates.passages }, signal,
     );
     run.classifierCost += costUsd;
+    run.classifierSuccessfulCalls++;
     return candidates.extract(scores);
   } catch (error) {
     classifierFailed(run, classifier, error, signal, false);
@@ -156,6 +158,7 @@ export async function classifyRead(
       signal,
     );
     run.classifierCost += costUsd;
+    run.classifierSuccessfulCalls++;
     const judgement = judgements[0];
     if (!judgement) return undefined;
     const decision = decide(judgement, criteria);
