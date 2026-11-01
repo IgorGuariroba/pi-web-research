@@ -7,7 +7,7 @@ import extension from "../index.ts";
 import { loadState, saveState } from "../state.ts";
 
 // Fronteira acordada: comando registrado, UI do Pi e model registry.
-function setup(t, { state = {}, screens = [], choices = [], available = [], models = [], classify } = {}) {
+function setup(t, { state = {}, screens = [], choices = [], available = [], models = [], classify, registryError } = {}) {
   const home = mkdtempSync(join(tmpdir(), "ws-model-settings-"));
   const originalHome = process.env.HOME;
   process.env.HOME = home;
@@ -25,7 +25,7 @@ function setup(t, { state = {}, screens = [], choices = [], available = [], mode
     hasUI: true,
     modelRegistry: {
       getAvailable: () => models,
-      getAvailableOfType: async () => available,
+      getAvailableOfType: async () => { if (registryError) throw Error(registryError); return available; },
       getModelsOfType: () => available,
       classify: classify ?? (async () => { throw Error("classificação não prevista"); }),
     },
@@ -111,6 +111,13 @@ test("escolher outro classificador não herda a validação do Jev; desativar us
   await h.run();
   assert.match(h.rendered[2], /desativado \(só regras\)/);
   assert.equal(loadState(h.path).classifier, "none");
+});
+
+test("falha ao consultar registry aparece como indisponível/erro, não como falta de configuração", async (t) => {
+  const h = setup(t, { screens: [null], registryError: "secret-registry-error" });
+  await h.run();
+  assert.match(h.rendered[0], /Classificador.*indisponível\/erro/);
+  assert.doesNotMatch(h.rendered[0], /não configurado|secret-registry-error/);
 });
 
 test("Classificador sem autenticação mostra não configurado e guia o login nativo", async (t) => {

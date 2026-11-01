@@ -245,12 +245,17 @@ export function piClassifier(registry: ModelRegistry, model: ClassifierModel): C
  * Resolve o Classificador da escolha salva: `none` → sem classificador;
  * `{provider,id}` → esse, se disponível; `auto` → primeiro da preferência disponível.
  */
-export async function detectClassifier(registry: ModelRegistry, choice: ClassifierChoice = DEFAULT_CLASSIFIER): Promise<Classifier | undefined> {
+export async function detectClassifier(
+  registry: ModelRegistry,
+  choice: ClassifierChoice = DEFAULT_CLASSIFIER,
+  options: { throwOnRegistryError?: boolean } = {},
+): Promise<Classifier | undefined> {
   if (choice === "none") return undefined;
   let available: readonly ClassifierModel[];
   try {
     available = (await registry.getAvailableOfType("classifier")) as readonly ClassifierModel[];
-  } catch {
+  } catch (error) {
+    if (options.throwOnRegistryError) throw error;
     return undefined;
   }
   const find = (provider: string, id: string) => available.find((m) => m.provider === provider && m.id === id);

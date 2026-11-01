@@ -8,7 +8,12 @@ export const describeClassifierChoice = (choice: ClassifierChoice | undefined) =
 
 export async function classifierStatus(ctx: ExtensionCommandContext, state: WebSearchState): Promise<string> {
   if (state.classifier === "none") return "desativado (só regras)";
-  const classifier = await detectClassifier(ctx.modelRegistry, state.classifier);
+  let classifier;
+  try {
+    classifier = await detectClassifier(ctx.modelRegistry, state.classifier, { throwOnRegistryError: true });
+  } catch {
+    return `indisponível/erro — falha ao consultar o model registry do Pi · ${describeClassifierChoice(state.classifier)}`;
+  }
   if (!classifier) {
     const history = state.classifierValidation;
     return [
