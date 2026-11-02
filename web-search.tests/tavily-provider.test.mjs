@@ -1,6 +1,7 @@
 // Categoria: TavilyProvider — retry+backoff, política de falha, contrato SearchResponse.
 // Mock do fetch global; restaura no afterEach.
-import { test, afterEach } from "node:test";
+import { afterEach } from "node:test";
+import { testWithFakeTime as test } from "./fake-time.mjs";
 import assert from "node:assert/strict";
 
 // O import precisa vir ANTES do mock do fetch (fetch é global).
@@ -17,8 +18,8 @@ function ok(body = TAVILY_RESPONSE) {
   return new Response(JSON.stringify(body), { status: 200 });
 }
 
-function err(status, body) {
-  return new Response(JSON.stringify(body || { error: `HTTP ${status}` }), { status });
+function err(status, body, headers) {
+  return new Response(JSON.stringify(body || { error: `HTTP ${status}` }), { status, headers });
 }
 
 function piiBlock(msg = "Query blocked, PII detected") {
@@ -29,10 +30,8 @@ function piiBlock(msg = "Query blocked, PII detected") {
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
-// TODO: esses testes mockam fetch global. O node:test executa em paralelo por
-// padrão — se outro teste usar fetch real ao mesmo tempo, colide. Em produção,
-// usar undici MockAgent ou rodar com --test-concurrency=1. Para a extensão
-// global (~/.pi/agent), concurrency=1 é aceitável (poucos testes).
+// Casos no mesmo arquivo são sequenciais; cada arquivo roda em worker isolado.
+// O relógio controlado executa backoff real sem esperar segundos de parede.
 
 // ---- TESTES ----
 
@@ -53,7 +52,7 @@ test("tavily: 429 com Retry-After (segundos) → retry funciona (2 tentativas)",
   let calls = 0;
   globalThis.fetch = async () => {
     calls++;
-    if (calls === 1) return err(429, { error: "rate limited" });
+    if (calls === 1) return err(429, { error: "rate limited" }, { "Retry-After": "2" });
     return ok();
   };
   const p = new TavilyProvider(KEY);
