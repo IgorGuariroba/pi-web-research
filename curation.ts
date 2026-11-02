@@ -3,7 +3,7 @@
  * Critério), Extração focada e classificação de página lida fora das buscas.
  * Classificador quando houver; regras como caminho padrão e em falha.
  */
-import { aggregateSearch, DEFAULT_SEARCH_MODE, type AggregatedResult } from "./aggregate-search.ts";
+import { aggregateSearch, AllProvidersFailedError, DEFAULT_SEARCH_MODE, type AggregatedResult } from "./aggregate-search.ts";
 import { OFF_TOPIC_THRESHOLD, type Classifier, type ResultJudgement } from "./classifier.ts";
 import { OTHER_CATEGORY, type Criterion } from "./criteria.ts";
 import { focusedCandidates, focusedExtract } from "./focused-extract.ts";
@@ -87,7 +87,19 @@ export const titledLabel = (result: CuratedResult) => `${result.title} ${sourceL
 /** Busca agregada + curadoria por regras: spam fora, Nível → Concordância, top 8. */
 export async function search(run: ResearchRun, query: string, signal?: AbortSignal) {
   const { options, funnel } = run;
-  const response = await aggregateSearch(options.providers, query, options.searchMode ?? DEFAULT_SEARCH_MODE, signal);
+  let response: Awaited<ReturnType<typeof aggregateSearch>>;
+  try {
+    response = await aggregateSearch(options.providers, query, options.searchMode ?? DEFAULT_SEARCH_MODE, signal);
+    run.searches++;
+  } catch (error) {
+    if (error instanceof AllProvidersFailedError) {
+      run.searches++;
+      run.failedSearches++;
+      run.searchWarnings.push(...error.failures);
+      run.outageReasons.push(...error.failures);
+    }
+    throw error;
+  }
   const judged = run.classifier ? await curateByClassifier(run, run.classifier, query, response.results, signal) : undefined;
   const curated: { results: CuratedResult[]; spam: number } = judged ?? curateByRules(response.results, subjectTerms(options.goal, query), options.blockedDomains);
   funnel.found += response.found;
@@ -175,6 +187,7 @@ const DISCARD_REASON: Record<ReadDiscardReason, string> = {
   "fora do tema": "Fora do tema do Goal",
   spam: "domínio de spam/bloqueado ou fonte julgada spam",
   "critério": "Categoria de descarte do Critério",
+  "sem conteúdo": "sem conteúdo extraível além do título (provavelmente montada por JavaScript); procure outra fonte",
 };
 export const discardedReadNotice = (reason: ReadDiscardReason) =>
   `Página descartada: ${DISCARD_REASON[reason]}. Não é Fonte lida; não a cite em 'Fontes' e não use o conteúdo dela.`;

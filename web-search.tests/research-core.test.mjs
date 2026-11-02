@@ -58,11 +58,11 @@ test("modelo: o Modelo de pesquisa salvo é usado e aparece nos details", async 
     providers: [fakeProvider("tavily")],
     models: ["claude-haiku-4", "salvo-model"],
     modelRef: { provider: "fake-llm", id: "salvo-model" },
-    script: [turn.text("ok")],
+    script: [turn.search("q"), turn.text("ok")],
   });
   try {
     const result = await h.run({ goal: "X" });
-    assert.deepEqual(h.llm.models(), ["salvo-model"]);
+    assert.deepEqual(h.llm.models(), ["salvo-model", "salvo-model"]);
     assert.equal(result.details.researchModel, "fake-llm/salvo-model");
   } finally {
     await h.cleanup();
@@ -77,11 +77,11 @@ for (const [models, expected] of [
   test(`modelo: sem modelo salvo usa o barato preferido (${expected})`, async () => {
     const h = await setupResearch({
       providers: [fakeProvider("tavily")], models, parentModelId: models[0],
-      script: [turn.text("ok")],
+      script: [turn.search("q"), turn.text("ok")],
     });
     try {
       const result = await h.run({ goal: "X" });
-      assert.deepEqual(h.llm.models(), [expected]);
+      assert.deepEqual(h.llm.models(), [expected, expected]);
       assert.equal(result.details.researchModel, `fake-llm/${expected}`);
     } finally {
       await h.cleanup();
@@ -92,11 +92,11 @@ for (const [models, expected] of [
 test("modelo: sem modelo salvo nem barato disponível usa o modelo do Agente pai", async () => {
   const h = await setupResearch({
     providers: [fakeProvider("tavily")], models: ["aaa-pro", "pai-opus"], parentModelId: "pai-opus",
-    script: [turn.text("ok")],
+    script: [turn.search("q"), turn.text("ok")],
   });
   try {
     const result = await h.run({ goal: "X" });
-    assert.deepEqual(h.llm.models(), ["pai-opus"]);
+    assert.deepEqual(h.llm.models(), ["pai-opus", "pai-opus"]);
     assert.equal(result.details.researchModel, "fake-llm/pai-opus");
   } finally {
     await h.cleanup();
@@ -107,11 +107,11 @@ test("modelo: modelo salvo que sumiu cai na preferência barata", async () => {
   const h = await setupResearch({
     providers: [fakeProvider("tavily")], models: ["big-pro", "claude-haiku-4"],
     modelRef: { provider: "fake-llm", id: "removido" },
-    script: [turn.text("ok")],
+    script: [turn.search("q"), turn.text("ok")],
   });
   try {
     await h.run({ goal: "X" });
-    assert.deepEqual(h.llm.models(), ["claude-haiku-4"]);
+    assert.deepEqual(h.llm.models(), ["claude-haiku-4", "claude-haiku-4"]);
   } finally {
     await h.cleanup();
   }

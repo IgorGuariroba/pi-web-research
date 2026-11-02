@@ -32,6 +32,9 @@ _Avoid_: resultados, dump
 **Síntese não verificada**:
 Síntese que terminou sem nenhuma Fonte lida; é devolvida mesmo assim, com aviso explícito de que se apoia apenas em resultados de busca.
 
+**Busca indisponível**:
+Aviso exibido no topo da Síntese quando todos os Providers falham em uma ou mais buscas da pesquisa (ex.: chaves de API inválidas ou esgotadas), informando a proporção de buscas afetadas e os motivos do erro.
+
 **Fallback cru**:
 Resultado degradado devolvido quando o subagente falha: resultados da Busca agregada, sem duplicatas e ordenados por Nível de fonte (com Critério ativo: Critério → Nível de fonte), marcados como "sem síntese".
 
@@ -67,6 +70,9 @@ Seção "Não encontrado" ao fim de uma Síntese com Critério, listando as Cate
 
 **Fora do tema**:
 Resultado que não trata do Goal; é sempre descartado, com ou sem Critério.
+
+**Sem conteúdo**:
+Motivo de descarte de leitura no `fetch_url`: página que não tem conteúdo textual extraível além do título (típica de aplicação montada apenas por JavaScript no cliente); é descartada pelo Funil e não conta como Fonte lida.
 
 **Funil**:
 O caminho completo de uma Research: busca → descarte → classificação → leitura → Síntese.

@@ -38,7 +38,8 @@ O gate é exercitado por `npm run test:mutation:smoke` em um Git descartável: c
 - O limite continua em **85%**; não foram adicionadas exclusões para melhorar artificialmente o score.
 - A amostra não permite extrapolar o tempo ou o score dos 3.304 mutantes. A base completa precisa ser medida novamente.
 - A seleção pode continuar ampla em módulos usados por muitos testes ou mutantes estáticos. O runner deve executar esses testes, não restringi-los manualmente para caber no prazo.
-- Testes, infraestrutura e dependências alterados ainda exigem base completa por segurança.
+- Testes alterados mutam a produção que alcançam (grafo de referências), não mais a base completa. Testes de integração via `research-harness.mjs` ou `index.ts` ainda alcançam quase toda a produção; testes unitários de módulo ficam restritos a 1–3 arquivos.
+- Infraestrutura de execução (configs, scripts de teste, versões de Stryker/Vitest) ainda exige base completa; release (`version`) e bump de dependência de runtime rodam só a suíte normal.
 - Não há cache incremental; mudanças nos testes nunca herdam aprovação anterior.
 
 ```sh
@@ -51,3 +52,12 @@ npm run test:mutation:full
 ```
 
 A medição da implementação ainda não commitada é feita em snapshot temporário de HEAD + alterações locais, sem alterar o index. Seus relatórios ficam em `reports/mutation-baseline/`; a amostra real validada fica em `reports/mutation-vitest-sample/`. Esses diretórios são ignorados pelo Git. O relatório JSON registra os fontes instrumentados, configuração e resultados.
+
+## Redução de custo do gate
+
+- Escopo por impacto em `scripts/mutation-scope.mjs` (ver README). Antes, qualquer mudança em `web-search.tests/`, `scripts/`, `package.json` ou `package-lock.json` disparava os ~3.304 mutantes, inclusive commits de release e bumps do Dependabot.
+- Pre-commit com `--defer-full`: a base completa exigida por infraestrutura roda só no CI, que continua sendo o gate obrigatório.
+- Limite de tempo no pre-commit: a etapa do Stryker tem 5 min (`MUTATION_TIME_LIMIT_SECONDS`). Testes alterados que alcançam `index.ts`/harness geram ~3.400 mutantes e levam bem mais que isso; estourado o prazo, o grupo de processos é morto e a validação fica só no CI. A suíte normal continua obrigatória no commit.
+- `concurrency` usa o padrão do Stryker (n-1 núcleos; n se n <= 4). Cada worker já roda o Vitest com um único worker, então não há multiplicação de processos.
+- `timeoutMS` 30 s → 10 s. O limite efetivo continua sendo `timeoutFactor` × tempo medido dos testes que cobrem o mutante + `timeoutMS`. Timeout conta como detecção; se aparecerem timeouts suspeitos em máquina carregada, aumente este valor, nunca o reduza abaixo do padrão (5 s).
+- O smoke deixou de ser um passo fixo do CI: roda dentro do gate quando `scripts/mutation*.mjs` muda ou em base completa. Medido localmente: ~18 s.

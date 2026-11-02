@@ -47,17 +47,30 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-/** Limpa a página com Readability (sem menu/rodapé/navegação); se falhar, conversão simples. */
+/**
+ * Fração mínima do texto da página que o Readability deve preservar. Abaixo
+ * disso ele elegeu o bloco errado (ex.: streaming SSR do React, cujo conteúdo
+ * fica em `<div hidden>` que o Readability descarta) e a conversão simples vence.
+ * Medido: páginas assim ficam < 1%; páginas normais, >= 20%.
+ */
+const MIN_READABLE_RATIO = 0.05;
+
+/** Limpa a página com Readability (sem menu/rodapé/navegação); se falhar ou perder a página, conversão simples. */
 export function readableText(html: string): string {
+  let plain: string | undefined;
+  // plain é avaliado lazy para evitar htmlToText(html) completo antes do Readability produzir conteúdo.
+  const getPlain = () => (plain ??= htmlToText(html));
   try {
     const { document } = parseHTML(html);
     const article = new Readability(document as unknown as Document).parse();
     const text = article?.content ? htmlToText(article.content) : "";
-    if (text) return article?.title && !text.startsWith(article.title) ? `${article.title}\n${text}` : text;
+    if (text && text.length >= getPlain().length * MIN_READABLE_RATIO) {
+      return article?.title && !text.startsWith(article.title) ? `${article.title}\n${text}` : text;
+    }
   } catch {
     // cai na conversão simples
   }
-  return htmlToText(html);
+  return getPlain();
 }
 
 export function truncatePage(text: string, maxChars = 50_000): string {
@@ -78,7 +91,17 @@ const MAX_REDIRECTS = 5;
 /** Teto do texto limpo antes da Extração focada. */
 const MAX_PAGE_CHARS = 500_000;
 
-export async function fetchPage(rawUrl: string, signal?: AbortSignal, httpFetch: HttpFetch = fetch): Promise<{ url: string; text: string }> {
+/**
+ * A página tem texto além do título? Página montada só por JavaScript chega
+ * como `<title>` + raiz vazia; ela não pode virar Fonte lida.
+ */
+export function hasContent(text: string, html?: string): boolean {
+  const title = html?.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const titleText = title === undefined ? "" : htmlToText(title);
+  return text.split("\n").some((line) => line.trim() && line.trim() !== titleText);
+}
+
+export async function fetchPage(rawUrl: string, signal?: AbortSignal, httpFetch: HttpFetch = fetch): Promise<{ url: string; text: string; hasContent: boolean }> {
   let url = validateFetchUrl(rawUrl);
   if (isPdfUrl(url)) throw new UnsupportedPdfError();
   const timeout = AbortSignal.timeout(20_000);
@@ -103,5 +126,7 @@ export async function fetchPage(rawUrl: string, signal?: AbortSignal, httpFetch:
   if (/pdf/i.test(contentType)) { await response.body?.cancel(); throw new UnsupportedPdfError(); }
   const body = await response.text();
   if (body.startsWith("%PDF-")) throw new UnsupportedPdfError();
-  return { url: url.href, text: truncatePage(contentType.includes("html") ? readableText(body) : body, MAX_PAGE_CHARS) };
+  const html = contentType.includes("html");
+  const text = html ? readableText(body) : body;
+  return { url: url.href, text: truncatePage(text, MAX_PAGE_CHARS), hasContent: hasContent(text, html ? body : undefined) };
 }

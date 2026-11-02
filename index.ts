@@ -36,6 +36,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { classifierStatus, configureClassifier } from "./classifier-settings.ts";
 import { runResearch } from "./research-runner.ts";
+import { createModelPicker, parseModelValue } from "./model-picker.ts";
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -187,25 +188,12 @@ export default function webSearchExtension(pi: ExtensionAPI) {
           ctx.ui.notify("Nenhum modelo disponível para o subagente. Conecte um provider pelo /login do Pi.", "warning");
           return;
         }
-        const modelItems: SelectItem[] = models.map((model) => ({
-          value: `${model.provider}\u0000${model.id}`,
-          label: model.name ?? model.id,
-          description: `${model.provider}/${model.id}`,
-        }));
         const selectedModel = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-          const list = new SelectList(modelItems, Math.min(modelItems.length, 12), {
-            selectedPrefix: (t: string) => theme.fg("accent", t),
-            selectedText: (t: string) => theme.fg("accent", t),
-            description: (t: string) => theme.fg("muted", t),
-            scrollInfo: (t: string) => theme.fg("dim", t),
-            noMatch: (t: string) => theme.fg("warning", t),
-          });
-          list.onSelect = (item: SelectItem) => done(item.value);
-          list.onCancel = () => done(null);
-          return { render: (w: number) => list.render(w), invalidate: () => list.invalidate(), handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); } };
+          const picker = createModelPicker(models, theme, done);
+          return { ...picker, handleInput: (data: string) => { picker.handleInput(data); tui.requestRender(); } };
         });
         if (!selectedModel) return;
-        const [provider, id] = selectedModel.split("\u0000");
+        const { provider, id } = parseModelValue(selectedModel);
         const latest = loadState(statePath);
         latest.researchModel = { provider, id };
         saveState(statePath, latest);

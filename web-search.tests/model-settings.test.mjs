@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import extension from "../index.ts";
 import { loadState, saveState } from "../state.ts";
+import { modelValue, parseModelValue } from "../model-picker.ts";
 
 // Fronteira acordada: comando registrado, UI do Pi e model registry.
 function setup(t, { state = {}, screens = [], choices = [], available = [], models = [], classify, registryError } = {}) {
@@ -45,7 +46,13 @@ function setup(t, { state = {}, screens = [], choices = [], available = [], mode
         const component = factory({ requestRender() {} }, { fg: (_color, s) => s, bold: (s) => s }, {}, (value) => result = value);
         rendered.push(component.render(160).join("\n"));
         assert.ok(screens.length, "tela não prevista");
-        const index = screens.shift();
+        let index = screens.shift();
+        // Tela com filtro: `{ type: "texto", index }` digita o texto antes de navegar.
+        if (index !== null && typeof index === "object") {
+          for (const char of index.type) component.handleInput(char);
+          rendered.push(component.render(160).join("\n"));
+          index = index.index;
+        }
         if (index === null) component.handleInput("\u001b");
         else {
           for (let i = 0; i < index; i++) component.handleInput("\u001b[B");
@@ -68,6 +75,44 @@ test("Modelo de pesquisa pode ser trocado sem validar provider ou chave", async 
   assert.deepEqual(loadState(h.path).researchModel, { provider: "test", id: "new" });
   assert.equal(loadState(h.path).keys.tavily, "preservada");
   assert.equal(loadState(h.path).classifier, "none");
+});
+
+const many = [
+  { provider: "openai-codex", id: "gpt-6-luna", name: "GPT-6 Luna" },
+  { provider: "openrouter", id: "mistralai/mistral-nemo", name: "Mistral: Mistral Nemo" },
+  { provider: "openrouter", id: "qwen/qwen3.7-flash", name: "Qwen: Qwen3.7 Flash" },
+  { provider: "openrouter", id: "openai/gpt-oss-20b", name: "OpenAI: gpt-oss-20b" },
+];
+
+test("Modelo de pesquisa: digitar filtra a lista por nome, provider e id", async (t) => {
+  const h = setup(t, { models: many, screens: [5, { type: "qwen", index: 0 }] });
+  await h.run();
+  assert.match(h.rendered[1], /Filtrar/);
+  assert.match(h.rendered[1], /GPT-6 Luna/);
+  assert.match(h.rendered[2], /Qwen3\.7 Flash/);
+  assert.doesNotMatch(h.rendered[2], /GPT-6 Luna|Mistral Nemo|gpt-oss/);
+  assert.deepEqual(loadState(h.path).researchModel, { provider: "openrouter", id: "qwen/qwen3.7-flash" });
+});
+
+test("Modelo de pesquisa: filtro por provider/id e navegação sobre a lista filtrada", async (t) => {
+  const h = setup(t, { models: many, screens: [5, { type: "openrouter", index: 2 }] });
+  await h.run();
+  assert.doesNotMatch(h.rendered[2], /GPT-6 Luna/);
+  assert.deepEqual(loadState(h.path).researchModel, { provider: "openrouter", id: "openai/gpt-oss-20b" });
+});
+
+test("Modelo de pesquisa: filtro sem correspondência não salva nada ao confirmar", async (t) => {
+  const h = setup(t, { state: { researchModel: { provider: "test", id: "old" } }, models: many, screens: [5, { type: "zzzz", index: 0 }] });
+  await h.run();
+  assert.match(h.rendered[2], /Nenhum modelo/);
+  assert.deepEqual(loadState(h.path).researchModel, { provider: "test", id: "old" });
+});
+
+test("model-picker: ida e volta de modelValue e parseModelValue com id contendo '/'", () => {
+  const model = { provider: "openrouter", id: "meta-llama/llama-3.3-70b-instruct" };
+  const encoded = modelValue(model);
+  const parsed = parseModelValue(encoded);
+  assert.deepEqual(parsed, model);
 });
 
 test("cancelar Modelo de pesquisa preserva a escolha anterior", async (t) => {
