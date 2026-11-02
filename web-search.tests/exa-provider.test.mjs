@@ -1,6 +1,7 @@
 // Categoria: ExaProvider — retry+backoff, política de falha, mapeamento SearchResult.
 // Mock do fetch global; restaura no afterEach.
-import { test, afterEach } from "node:test";
+import { afterEach } from "node:test";
+import { testWithFakeTime as test } from "./fake-time.mjs";
 import assert from "node:assert/strict";
 
 import { ExaProvider } from "../exa-provider.ts";

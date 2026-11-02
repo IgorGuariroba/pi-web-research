@@ -3,3 +3,7 @@ state.json
 
 # Symlinks locais para rodar os testes (peerDeps resolvidos no npm global)
 node_modules/
+
+# Relatórios e sandboxes de mutation testing
+reports/
+.stryker-tmp/

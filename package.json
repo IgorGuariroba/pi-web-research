@@ -3,7 +3,11 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs",
+    "test:vitest": "vitest run",
+    "test:mutation": "node scripts/mutation.mjs --staged",
+    "test:mutation:full": "node scripts/mutation.mjs --full",
+    "test:mutation:smoke": "node scripts/mutation-smoke.mjs"
   },
   "description": "Extensão de pesquisa web para o Pi Coding Agent — delega buscas a um subagente isolado e devolve apenas a síntese, protegendo o contexto do agente principal",
   "keywords": [
@@ -38,5 +42,11 @@
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "linkedom": "^0.18.14"
+  },
+  "devDependencies": {
+    "@sinonjs/fake-timers": "15.0.0",
+    "@stryker-mutator/core": "10.1.1",
+    "@stryker-mutator/vitest-runner": "10.1.1",
+    "vitest": "4.1.12"
   }
 }
