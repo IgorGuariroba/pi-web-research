@@ -8,8 +8,10 @@ export default {
   clearTextReporter: { logTests: false },
   htmlReporter: { fileName: "reports/mutation/index.html" },
   jsonReporter: { fileName: "reports/mutation/mutation.json" },
-  concurrency: 4,
-  timeoutMS: 30_000,
+  // Sem concurrency fixa: o padrão do Stryker usa n-1 núcleos (n se n <= 4).
+  // timeoutMS soma-se a timeoutFactor x tempo medido dos testes que cobrem o mutante;
+  // 10 s ainda deixa folga para máquina carregada sem pagar 30 s por mutante que trava.
+  timeoutMS: 10_000,
   timeoutFactor: 2,
   // No result reuse: changing tests must never reuse an old approval.
   incremental: false,

@@ -39,9 +39,9 @@ test("boundary", (t) => {
   git("add", ".");
   git("commit", "-qm", "fixture baseline");
   const base = git("rev-parse", "HEAD").toString().trim();
-  const runGate = (args = ["--staged"]) => {
+  const runGate = (args = ["--staged"], env = {}) => {
     const result = spawnSync(process.execPath, [resolve(root, "scripts/mutation.mjs"), ...args], {
-      cwd: temp, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+      cwd: temp, env: { ...process.env, ...env }, encoding: "utf8", timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
     });
     if (result.error) throw result.error;
     console.log(result.stdout, result.stderr);
@@ -68,6 +68,32 @@ test("boundary", (t) => {
   const weak = runGate();
   assert.notEqual(weak.status, 0, "surviving mutants must block the commit");
   assert.match(weak.stdout + weak.stderr, /mutation score|threshold/i);
+  assert.match(weak.stdout, /Escopo de mutação: fixture\.ts\n/, "changed tests must mutate the production they reach");
+  // Pre-commit com orçamento estourado abandona a mutação (mesmo a que reprovaria) e delega ao CI.
+  const overBudget = runGate(["--staged", "--defer-full"], { MUTATION_TIME_LIMIT_SECONDS: "1" });
+  assert.equal(overBudget.status, 0, "pre-commit over its time limit defers mutation to CI");
+  assert.match(overBudget.stdout, /excedeu 1 s no pre-commit/);
+  assert.doesNotMatch(overBudget.stdout + overBudget.stderr, /Mutation gate reprovado/);
+  git("reset", "--hard", "-q", "HEAD");
+  writeFileSync(join(temp, "web-search.tests/unrelated.test.mjs"), 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("unrelated", () => { assert.equal(2 + 2, 4); });\n');
+  git("add", "web-search.tests/unrelated.test.mjs");
+  const unrelatedRun = runGate();
+  assert.equal(unrelatedRun.status, 0, "tests that reach no production code only need the normal suite");
+  assert.match(unrelatedRun.stdout, /Nenhuma linha TypeScript de produção para mutar/);
+  git("reset", "--hard", "-q", "HEAD");
+  const manifest = JSON.parse(readFileSync(join(temp, "package.json"), "utf8"));
+  writeFileSync(join(temp, "package.json"), JSON.stringify({ ...manifest, version: "99.0.0" }, null, 2) + "\n");
+  git("add", "package.json");
+  const releaseRun = runGate();
+  assert.equal(releaseRun.status, 0, "metadata-only manifest changes run the normal suite without full mutation");
+  assert.match(releaseRun.stdout, /Nenhuma linha TypeScript de produção para mutar/);
+  git("reset", "--hard", "-q", "HEAD");
+  writeFileSync(join(temp, "vitest.config.mjs"), readFileSync(join(temp, "vitest.config.mjs"), "utf8") + "// infra\n");
+  git("add", "vitest.config.mjs");
+  const deferred = runGate(["--staged", "--defer-full"]);
+  assert.equal(deferred.status, 0, "pre-commit defers full mutation to CI");
+  assert.match(deferred.stdout, /base completa será validada no CI/);
+  assert.doesNotMatch(deferred.stdout, /Escopo de mutação/);
   git("reset", "--hard", "-q", "HEAD");
   writeFileSync(join(temp, "README.md"), "# Documentação pura\n");
   git("add", "README.md");
@@ -84,7 +110,7 @@ test("boundary", (t) => {
   writeFileSync(source, "export const positive = (value: number) => false;\n");
   git("add", "fixture.ts");
   assert.notEqual(runGate().status, 0, "failing normal tests must block the commit");
-  console.log("Mutation smoke: staged isolation, per-test coverage, CI diff, approval and rejection validated.");
+  console.log("Mutation smoke: staged isolation, per-test coverage, CI diff, impact scope, deferred full run, approval and rejection validated.");
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
