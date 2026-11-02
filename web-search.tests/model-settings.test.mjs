@@ -98,7 +98,14 @@ test("Modelo de pesquisa: filtro por provider/id e navegação sobre a lista fil
   const h = setup(t, { models: many, screens: [5, { type: "openrouter", index: 2 }] });
   await h.run();
   assert.doesNotMatch(h.rendered[2], /GPT-6 Luna/);
-  assert.deepEqual(loadState(h.path).researchModel, { provider: "openrouter", id: "openai/gpt-oss-20b" });
+  // A ordem do ranking fuzzy é detalhe do pi-tui; o contrato é que a navegação
+  // opera sobre a lista filtrada exibida, seja qual for a ordem.
+  const shown = [...h.rendered[2].matchAll(/^.*?\s(openrouter)\/(\S+)\s*$/gm)].map(([, provider, id]) => ({ provider, id }));
+  assert.deepEqual(
+    shown.map((m) => m.id).sort(),
+    ["mistralai/mistral-nemo", "openai/gpt-oss-20b", "qwen/qwen3.7-flash"],
+  );
+  assert.deepEqual(loadState(h.path).researchModel, shown[2]);
 });
 
 test("Modelo de pesquisa: filtro sem correspondência não salva nada ao confirmar", async (t) => {
