@@ -164,3 +164,84 @@ for (const [name, line] of [
     }
   });
 }
+
+// Caso real: modelo fraco (mistral-nemo) respondeu sem chamar nenhuma tool,
+// inventando modelos e preços; a Síntese não verificada chegava ao Agente pai.
+test("sem pesquisa: subagente que responde sem buscar nem ler recebe um pedido para pesquisar", async () => {
+  const sintese = `A resposta é 42.\n\nFontes\n- ${LIDA}`;
+  const h = await setupResearch({
+    providers: [provider()], pages, modelRef: MODEL,
+    script: (body, i) => [
+      turn.text("Inventei: a resposta é 7."),
+      /web_search/.test(lastUserText(body)) ? turn.search("resposta") : turn.text("sem pedido para pesquisar"),
+      turn.fetch(LIDA),
+      turn.text(sintese),
+    ][i],
+  });
+  try {
+    const result = await h.run({ goal: "Descobrir a resposta" });
+    assert.equal(textOf(result), `${sintese} [docs]`);
+    assert.equal(result.details.sourcesRead, 1);
+    assert.equal(result.details.fallback, undefined);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("sem pesquisa: subagente que insiste em não pesquisar cai no Fallback cru, sem a resposta inventada", async () => {
+  const tavily = provider();
+  const h = await setupResearch({
+    providers: [tavily], pages, modelRef: MODEL,
+    script: [turn.text("Inventei: a resposta é 7."), turn.text("Inventei de novo: 7.")],
+  });
+  try {
+    const result = await h.run({ goal: "Descobrir a resposta" });
+    const text = textOf(result);
+    assert.match(text, /^\[Fallback sem síntese — o subagente falhou: .*não chamou web_search nem fetch_url/);
+    assert.doesNotMatch(text, /Inventei/);
+    assert.match(text, /docs\.exemplo\.test\/guia/);
+    assert.deepEqual(tavily.calls, ["Descobrir a resposta"]);
+    assert.equal(result.details.fallback, true);
+    assert.equal(h.llm.requests.length, 2, "um único pedido para pesquisar");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// Página montada só por JavaScript: o HTML não traz nada além do título. Antes
+// contava como Fonte lida, e a Síntese se apoiava em snippets atribuídos a ela.
+const VAZIA = "https://app.exemplo.test/precos";
+const SPA = "<html><head><title>Preços | App</title><script>boot()</script></head><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>";
+
+test("fontes: página sem conteúdo além do título não é Fonte lida e o subagente é avisado", async () => {
+  const citando = `O preço é 7.\n\nFontes\n- ${VAZIA}`;
+  const h = await setupResearch({
+    providers: [fakeProvider("tavily", [r(VAZIA, "Preços")])], pages: { [VAZIA]: SPA }, modelRef: MODEL,
+    script: [turn.search("preços"), turn.fetch(VAZIA), turn.text(citando), turn.text(citando)],
+  });
+  try {
+    const result = await h.run({ goal: "Descobrir o preço" });
+    assert.match(h.llm.toolResults()[1], /^URL final: https:\/\/app\.exemplo\.test\/precos\n\nPágina descartada: sem conteúdo extraível/);
+    assert.equal(result.details.sourcesRead, 0);
+    assert.equal(result.details.unverified, true);
+    assert.deepEqual(result.details.removedCitations, [VAZIA]);
+    assert.deepEqual(result.details.discardedReads, [{ url: VAZIA, reason: "sem conteúdo" }]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("fontes: página curta com conteúdo além do título continua sendo Fonte lida", async () => {
+  const h = await setupResearch({
+    providers: [fakeProvider("tavily", [r(VAZIA, "Preços")])],
+    pages: { [VAZIA]: "<html><head><title>Preços | App</title></head><body><p>Plano único: R$ 7.</p></body></html>" }, modelRef: MODEL,
+    script: [turn.search("preços"), turn.fetch(VAZIA), turn.text(`O preço é R$ 7.\n\nFontes\n- ${VAZIA}`)],
+  });
+  try {
+    const result = await h.run({ goal: "Descobrir o preço" });
+    assert.equal(result.details.sourcesRead, 1);
+    assert.match(h.llm.toolResults()[1], /Plano único: R\$ 7\./);
+  } finally {
+    await h.cleanup();
+  }
+});

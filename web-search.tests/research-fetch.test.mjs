@@ -72,6 +72,21 @@ test("leitura: HTML que o Readability não processa cai na conversão simples", 
   assert.match(toolResults[1], /valor-unico-77/);
 });
 
+// Streaming SSR do React (Suspense): o conteúdo chega em `<div hidden id="S:n">`
+// e só é movido para o lugar por script no navegador. O Readability descarta
+// `[hidden]` e elegia o botão do menu como artigo (caso real: páginas de modelo
+// do OpenRouter devolviam só "Talk to sales" e os preços sumiam).
+const STREAMED_PAGE = `<html><head><title>Mistral Nemo</title></head><body>
+<nav><p><a href="/sales">Talk to sales</a></p></nav><main><template id="B:0"></template></main>
+<div hidden id="S:0">${Array.from({ length: 8 }, (_, i) => `<p>Mistral Nemo custa $0.0${i}/M input tokens e $0.1${i}/M output tokens, com suporte a tool calling e contexto de 128k tokens para agentes.</p>`).join("")}</div>
+</body></html>`;
+
+test("leitura: conteúdo em segmentos hidden do streaming SSR não se perde no Readability", async () => {
+  const { toolResults } = await readThrough({ "https://or.test/mistral-nemo": STREAMED_PAGE }, ["https://or.test/mistral-nemo"], { goal: "preço do Mistral Nemo por 1M tokens" });
+  assert.match(toolResults[0], /\$0\.00\/M input tokens/);
+  assert.match(toolResults[0], /tool calling/);
+});
+
 const filler = (i) => `<p>Parágrafo genérico número ${i} sobre assuntos variados do cotidiano, com bastante texto irrelevante para encher a página e simular um artigo extenso que fala de clima, culinária, esportes e viagens sem nenhum foco específico.</p>`;
 const longArticle = (special) => {
   const parts = Array.from({ length: 120 }, (_, i) => filler(i));

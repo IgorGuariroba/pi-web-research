@@ -38,6 +38,11 @@ export interface ResearchRun {
   options: RunResearchOptions;
   funnel: Funnel;
   searchWarnings: string[];
+  /** Motivos de falha total de busca (todos os Providers falharam). */
+  outageReasons: string[];
+  /** Buscas feitas e buscas em que todos os Providers falharam. */
+  searches: number;
+  failedSearches: number;
   classifier?: Classifier;
   classifierCost: number;
   classifierSuccessfulCalls: number;
@@ -53,7 +58,8 @@ export interface ResearchRun {
 }
 
 /** Motivo do descarte de uma página lida: mesmo corte do Funil nas buscas. */
-export type ReadDiscardReason = "spam" | "fora do tema" | "critério";
+/** `sem conteúdo`: nada além do título (página montada só por JavaScript). */
+export type ReadDiscardReason = "spam" | "fora do tema" | "critério" | "sem conteúdo";
 
 export interface DiscardedRead {
   /** URL final da leitura (ou a pedida, quando bloqueada antes de buscar). */
@@ -114,6 +120,7 @@ export function funnelDetails(run: ResearchRun) {
   if (run.offTopicDiscarded.length) details.offTopicDiscarded = [...run.offTopicDiscarded];
   if (run.discardedReads.length) details.discardedReads = [...run.discardedReads];
   if (run.searchWarnings.length) details.searchWarnings = [...run.searchWarnings];
+  if (run.failedSearches) details.failedSearches = run.failedSearches;
   return details;
 }
 
@@ -132,4 +139,14 @@ export function criteriaNotice(run: ResearchRun): { text?: string; details: Reco
     return { text, details: { criteriaDegraded: text } };
   }
   return { details: {} };
+}
+
+/**
+ * Aviso de Busca indisponível (topo da Síntese): buscas em que todos os
+ * Providers falharam (ex.: chaves inválidas), com os motivos distintos.
+ */
+export function searchOutageNotice(run: ResearchRun): string | undefined {
+  if (!run.failedSearches) return undefined;
+  const reasons = [...new Set(run.outageReasons)].join("; ");
+  return `Busca indisponível — todos os Providers falharam em ${run.failedSearches} de ${run.searches} buscas: ${reasons}. Verifique as chaves em /web-search.`;
 }

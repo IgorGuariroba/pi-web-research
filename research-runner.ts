@@ -26,7 +26,7 @@ import type { SearchMode } from "./aggregate-search.ts";
 import { fetchPage, UnsupportedPdfError, type HttpFetch } from "./fetch-url.ts";
 import { classifyRead, discardedReadNotice, focusPage, search, titledLabel } from "./curation.ts";
 import {
-  classifierUsageText, criteriaNotice, emptyFunnel, funnelDetails, keptCount, type ReadDiscardReason, type ResearchRun,
+  classifierUsageText, criteriaNotice, emptyFunnel, funnelDetails, keptCount, searchOutageNotice, type ReadDiscardReason, type ResearchRun,
 } from "./research-run.ts";
 import { isSpam, shortSnippet, sourceLevel, subjectTerms } from "./source-level.ts";
 import { DEFAULT_CLASSIFIER, detectClassifier, type Classifier, type ClassifierChoice } from "./classifier.ts";
@@ -107,6 +107,9 @@ interface SubagentOutcome {
   readsByCategory?: Record<string, number>;
 }
 
+const NO_RESEARCH_MESSAGE =
+  "Você respondeu sem pesquisar. Respostas de memória são descartadas. Chame web_search agora, leia as páginas relevantes com fetch_url e só então produza a síntese final.";
+
 async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutcome> {
   const { options } = run;
   const { depth, signal } = options;
@@ -114,6 +117,8 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
   const budget = createResearchBudget(depth);
   const limits = getResearchLimits(depth);
   const queries: string[] = [];
+  /** Chamadas de web_search/fetch_url: zero = Modelo de pesquisa respondeu sem pesquisar. */
+  let researchCalls = 0;
   /** Classificação dos resultados mostrados nas buscas, pela URL canônica. */
   const seen = new Map<string, SourceLabel>();
   /**
@@ -150,6 +155,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     description: "Busca a web. Use queries específicas; prefira fontes primárias.",
     parameters: searchParameters,
     async execute(_id, params, toolSignal) {
+      researchCalls++;
       if (!budget.consumeSearch()) return { content: [{ type: "text", text: "Orçamento de buscas esgotado. Produza a síntese final agora." }], details: undefined };
       options.onProgress?.(`Buscando: ${params.query}`);
       queries.push(params.query);
@@ -168,6 +174,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
     description: "Lê uma página HTTP(S) pública e retorna texto truncado.",
     parameters: fetchParameters,
     async execute(_id, params, toolSignal) {
+      researchCalls++;
       // Domínio spam/bloqueado: nem busca a página (e não gasta orçamento).
       if (isSpam(params.url, options.blockedDomains)) return discardRead(params.url, "spam");
       if (!budget.consumeFetch()) return { content: [{ type: "text", text: "Orçamento de páginas esgotado. Produza a síntese final agora." }], details: undefined };
@@ -179,6 +186,7 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
         if (error instanceof UnsupportedPdfError) budget.refundFetch();
         throw error;
       }
+      if (!page.hasContent) return discardRead(page.url, "sem conteúdo");
       const sourceLabel = await labelOf(params.url, page.url, page.text, toolSignal);
       if (typeof sourceLabel === "string") return discardRead(page.url, sourceLabel);
       sources.add(params.url, page.url, sourceLabel);
@@ -225,6 +233,13 @@ async function runSubagent(run: ResearchRun, model: Model): Promise<SubagentOutc
       if (signal?.aborted) throw signal.reason ?? new Error("Pesquisa cancelada.");
     };
     await prompt(buildResearchPrompt(options.goal, options.focus, depth, run.criteria));
+    // Sem nenhuma busca/leitura a resposta é só memória do modelo (caso real:
+    // modelo fraco inventando nomes e preços). Um pedido; se insistir, Fallback cru.
+    if (researchCalls === 0) {
+      options.onProgress?.("Subagente respondeu sem pesquisar; pedindo que pesquise…");
+      await prompt(NO_RESEARCH_MESSAGE);
+      if (researchCalls === 0) throw new Error("o Modelo de pesquisa não chamou web_search nem fetch_url; respostas sem pesquisa são descartadas. Troque o Modelo de pesquisa em /web-search.");
+    }
     let answer = textOfLastAssistant(session.messages);
     if (!answer) throw new Error("Subagente não produziu uma síntese.");
     const unread = unreadCitations(answer, sources);
@@ -252,6 +267,9 @@ async function rawFallback(run: ResearchRun, error: unknown, researchModel: stri
   // Contadores do Fallback cru descrevem só a busca do fallback.
   run.funnel = emptyFunnel(run.classifier, run.criteria);
   run.searchWarnings = [];
+  run.outageReasons = [];
+  run.searches = 0;
+  run.failedSearches = 0;
   run.judgeFailures = 0;
   run.offTopicDiscarded = [];
   run.discardedReads = [];
@@ -286,7 +304,7 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
     ? choice
     : await detectClassifier(options.modelRegistry, choice);
   const criteria = classifier ? options.criteria : undefined;
-  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], classifier, classifierCost: 0, classifierSuccessfulCalls: 0, classifierFailedCalls: 0, criteria, judgeFailures: 0, offTopicDiscarded: [], discardedReads: [] };
+  const run: ResearchRun = { options, funnel: emptyFunnel(classifier, criteria), searchWarnings: [], outageReasons: [], searches: 0, failedSearches: 0, classifier, classifierCost: 0, classifierSuccessfulCalls: 0, classifierFailedCalls: 0, criteria, judgeFailures: 0, offTopicDiscarded: [], discardedReads: [] };
   options.onProgress?.(classifier
     ? `Classificador disponível: ${classifier.name} — uso ainda não comprovado nesta pesquisa.`
     : "Classificador indisponível ou desativado — fallback por regras.");
@@ -295,7 +313,8 @@ export async function runResearch(options: RunResearchOptions): Promise<Research
     const outcome = await runSubagent(run, model);
     const unverified = outcome.sourcesRead === 0;
     const criteriaWarning = criteriaNotice(run);
-    const text = [criteriaWarning.text && `[${criteriaWarning.text}]`, unverified && UNVERIFIED_NOTICE, outcome.text].filter(Boolean).join("\n\n");
+    const outage = searchOutageNotice(run);
+    const text = [criteriaWarning.text && `[${criteriaWarning.text}]`, outage && `[${outage}]`, unverified && UNVERIFIED_NOTICE, outcome.text].filter(Boolean).join("\n\n");
     return {
       content: [{ type: "text", text }],
       details: {

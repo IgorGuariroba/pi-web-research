@@ -18,6 +18,16 @@ export type SearchMode = "agregada" | "econômica";
 /** Modo de busca padrão. */
 export const DEFAULT_SEARCH_MODE: SearchMode = "agregada";
 
+/** Nenhum Provider respondeu à busca; `failures` traz o motivo de cada um. */
+export class AllProvidersFailedError extends Error {
+  readonly failures: readonly string[];
+  constructor(failures: readonly string[]) {
+    super(`Todos os Providers falharam: ${failures.join("; ")}`);
+    this.failures = failures;
+    this.name = "AllProvidersFailedError";
+  }
+}
+
 export interface AggregatedResult extends SearchResult {
   /** Providers que encontraram este resultado (Concordância). */
   providers: string[];
@@ -76,7 +86,7 @@ export async function aggregateSearch(
     });
   }
   if (signal?.aborted) throw signal.reason ?? new Error("Busca cancelada.");
-  if (!responses.length) throw new Error(`Todos os Providers falharam: ${failures.join("; ")}`);
+  if (!responses.length) throw new AllProvidersFailedError(failures);
 
   const byUrl = new Map<string, AggregatedResult>();
   let found = 0;

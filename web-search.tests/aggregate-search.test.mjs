@@ -3,6 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setupResearch, turn, fakeProvider, failingProvider, emptyProvider, fakeClassifier, r, textOf } from "./research-harness.mjs";
 import { gooseResponseFromText } from "../goose-adapter.ts";
+import { search } from "../curation.ts";
+import { emptyFunnel } from "../research-run.ts";
+import { AllProvidersFailedError } from "../aggregate-search.ts";
 
 const modelRef = { provider: "fake-llm", id: "fake-model" };
 
@@ -72,6 +75,115 @@ test("agregada: todos os Providers falhando vira erro para o subagente", () =>
     assert.match(seen, /e off/);
     assert.equal(result.details.synthesized, true);
   }));
+
+// Caso real: chaves Exa/Tavily inválidas (401) em todas as buscas; o Agente pai
+// recebia só "Síntese não verificada", sem saber que a busca estava fora do ar.
+test("agregada: falha de todos os Providers chega ao Agente pai no topo da Síntese e nos details", () =>
+  withResearch({
+    providers: [failingProvider("tavily", "tavily: HTTP 401"), failingProvider("exa", "exa: Invalid API key")],
+    script: [turn.search("q1"), turn.search("q2"), turn.text("fim")],
+  }, async (h) => {
+    const result = await h.run({ goal: "G" });
+    const text = textOf(result);
+    assert.match(text, /^\[Busca indisponível — todos os Providers falharam em 2 de 2 buscas: tavily falhou: tavily: HTTP 401; exa falhou: exa: Invalid API key\. Verifique as chaves em \/web-search\.\]/);
+    assert.match(text, /fim$/);
+    assert.deepEqual(result.details.searchWarnings, [
+      "tavily falhou: tavily: HTTP 401", "exa falhou: exa: Invalid API key",
+      "tavily falhou: tavily: HTTP 401", "exa falhou: exa: Invalid API key",
+    ]);
+    assert.deepEqual(result.details.failedSearches, 2);
+  }));
+
+test("agregada: falha total em só parte das buscas também é avisada, com a contagem", () =>
+  withResearch({
+    providers: [{ name: "tavily", calls: [], async search(q) { this.calls.push(q); if (this.calls.length === 1) throw new Error("timeout"); return { provider: "tavily", results: [r("https://a.test/1", "A")], durationMs: 1, warnings: [] }; } }],
+    script: [turn.search("q1"), turn.search("q2"), turn.text("fim")],
+  }, async (h) => {
+    const result = await h.run({ goal: "G" });
+    assert.match(textOf(result), /^\[Busca indisponível — todos os Providers falharam em 1 de 2 buscas: tavily falhou: timeout\./);
+    assert.equal(result.details.failedSearches, 1);
+  }));
+
+test("agregada: sem falha total não há aviso de Busca indisponível", () =>
+  withResearch({
+    providers: [fakeProvider("exa", [r("https://a.test/1", "A")]), failingProvider("tavily", "t off")],
+    script: [turn.search("q"), turn.text("fim")],
+  }, async (h) => {
+    const result = await h.run({ goal: "G" });
+    assert.doesNotMatch(textOf(result), /Busca indisponível/);
+    assert.equal(result.details.failedSearches, undefined);
+  }));
+
+test("agregada: aviso de Busca indisponível não inclui falhas parciais nem falhas do classificador", () =>
+  withResearch({
+    providers: [
+      {
+        name: "exa",
+        calls: [],
+        async search(q) {
+          this.calls.push(q);
+          if (this.calls.length === 1) return { provider: "exa", results: [r("https://a.test/1", "A")], durationMs: 1, warnings: [] };
+          throw new Error("exa timeout");
+        },
+      },
+      failingProvider("tavily", "tavily timeout"),
+    ],
+    classifier: {
+      name: "falho",
+      async judgeResults() { throw new Error("cota esgotada"); },
+    },
+    script: [turn.search("q1"), turn.search("q2"), turn.text("fim")],
+  }, async (h) => {
+    const result = await h.run({ goal: "G" });
+    const text = textOf(result);
+    assert.match(text, /^\[Busca indisponível — todos os Providers falharam em 1 de 2 buscas: exa falhou: exa timeout; tavily falhou: tavily timeout\. Verifique as chaves em \/web-search\.\]/);
+    assert.doesNotMatch(text, /cota esgotada/);
+    assert.equal(result.details.failedSearches, 1);
+    assert.ok(result.details.searchWarnings.some((w) => /cota esgotada/.test(w)));
+    assert.ok(result.details.searchWarnings.some((w) => /tavily timeout/.test(w)));
+  }));
+
+test("curation: busca cancelada por signal não conta em searches; sucesso e outage contam", async () => {
+  const ac = new AbortController();
+  ac.abort();
+  const run = {
+    options: { providers: [fakeProvider("tavily", [])], goal: "G" },
+    funnel: emptyFunnel(),
+    searches: 0,
+    failedSearches: 0,
+    searchWarnings: [],
+    outageReasons: [],
+  };
+
+  await assert.rejects(() => search(run, "cancelada", ac.signal));
+  assert.equal(run.searches, 0);
+  assert.equal(run.failedSearches, 0);
+
+  const runSuccess = {
+    options: { providers: [fakeProvider("tavily", [r("https://a.test/1", "A")])], goal: "G" },
+    funnel: emptyFunnel(),
+    searches: 0,
+    failedSearches: 0,
+    searchWarnings: [],
+    outageReasons: [],
+  };
+  await search(runSuccess, "ok");
+  assert.equal(runSuccess.searches, 1);
+  assert.equal(runSuccess.failedSearches, 0);
+
+  const runFail = {
+    options: { providers: [failingProvider("tavily", "queda total")], goal: "G" },
+    funnel: emptyFunnel(),
+    searches: 0,
+    failedSearches: 0,
+    searchWarnings: [],
+    outageReasons: [],
+  };
+  await assert.rejects(() => search(runFail, "falha"), (err) => err instanceof AllProvidersFailedError);
+  assert.equal(runFail.searches, 1);
+  assert.equal(runFail.failedSearches, 1);
+  assert.deepEqual(runFail.outageReasons, ["tavily falhou: queda total"]);
+});
 
 test("agregada: Goose só entra sem nenhum Provider com chave", async () => {
   const goose = fakeProvider("goose:computercontroller", [r("https://g.test/1", "G1")]);

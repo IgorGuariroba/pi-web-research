@@ -19,6 +19,7 @@ import { ModelRuntime, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { runResearch } from "../research-runner.ts";
 
 function startFakeOpenAIServer() {
+  let requests = 0;
   const server = createServer((req, res) => {
     if (!req.url?.includes("/chat/completions")) {
       res.writeHead(404).end();
@@ -39,8 +40,14 @@ function startFakeOpenAIServer() {
           model: "fake-model",
           choices: [{ index: 0, delta, finish_reason: finish }],
         })}\n\n`;
-      res.write(chunk({ role: "assistant", content: "Síntese fake concluída.\n\nFontes\n- https://exemplo.com" }));
-      res.write(chunk({}, "stop"));
+      // 1ª resposta pesquisa (Síntese sem pesquisa é descartada); depois sintetiza.
+      if (requests++ === 0) {
+        res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_0", type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: "teste" }) } }] }));
+        res.write(chunk({}, "tool_calls"));
+      } else {
+        res.write(chunk({ role: "assistant", content: "Síntese fake concluída.\n\nFontes\n- https://exemplo.com" }));
+        res.write(chunk({}, "stop"));
+      }
       res.write("data: [DONE]\n\n");
       res.end();
     });

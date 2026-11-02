@@ -38,7 +38,11 @@ export function buildResearchPrompt(
     focus ? `Foco do agente pai: ${focus}` : "Foco: responda apenas o necessário para o objetivo.",
     `Profundidade: ${depth}. Faça no máximo ${limits.searches} buscas e ${limits.fetches} leituras de página.`,
     ...(criteria?.length ? criteriaSection(criteria, depth) : []),
+    "Comece chamando web_search; não responda de memória.",
     "Prefira fontes primárias e oficiais. Cruze fontes quando houver conflito.",
+    "Para listas, preços e comparações, prefira dados estruturados oficiais (API pública, JSON, tabela de preços) e diga o escopo da fonte (ex.: só os mais usados).",
+    "Números, preços, versões e nomes só podem vir do conteúdo de páginas lidas com fetch_url; snippets de busca servem apenas para escolher o que ler.",
+    "Se um dado não estiver nas páginas lidas, diga que não foi encontrado em vez de estimar.",
     "Sua resposta final deve ser uma síntese curta e diretamente útil, sem narrar o processo.",
     "Termine com uma seção 'Fontes' contendo somente as URLs efetivamente usadas.",
   ].join("\n");
