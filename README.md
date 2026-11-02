@@ -150,6 +150,7 @@ Não encontrado
 ```sh
 npm ci
 npm test
+npm run test:vitest
 ```
 
 A suíte usa HOME descartável e não faz buscas reais. O comparativo real da #13 e suas limitações estão em [docs/measurements/issue-13.md](docs/measurements/issue-13.md). A recalibração com Jev autenticado continua pendente; esta versão não altera o limiar de Fora do tema (0,7) nem o timeout do `deep` (180s).
@@ -162,9 +163,30 @@ Ative o hook versionado uma vez em cada clone:
 git config core.hooksPath .githooks
 ```
 
-O hook executa `git diff --cached --check` (whitespace e marcadores de conflito adicionados) e `npm test`, bloqueando o commit em caso de falha. Requer as dependências instaladas e Node.js 24, como no CI.
+Requer Node.js 24 e `npm ci` (incluindo devDependencies). O hook bloqueia o commit se qualquer etapa falhar:
 
-Os testes validam a árvore de trabalho, incluindo alterações ainda não staged. O CI continua sendo a validação independente dos hooks locais.
+1. `git diff --cached --check`: whitespace e marcadores de conflito adicionados.
+2. `npm test`: suíte normal sobre uma cópia exata do **conteúdo staged**.
+3. StrykerJS: mutation testing nas linhas TypeScript adicionadas/modificadas, com **score mínimo de 85%**, configurado em `stryker.config.mjs`.
+
+Código e testes unstaged/untracked não participam da aprovação. O snapshot usa `git write-tree` e `git archive`, sem criar commits ou alterar o index. As dependências instaladas são compartilhadas; mantenha manifesto e lockfile alinhados ao snapshot e rode `npm ci` após mudanças de dependências.
+
+Hunks de deleção pura validam o arquivo restante inteiro. Arquivos removidos não têm código para mutar. Mudanças em testes, scripts, dependências ou configuração do Stryker/Vitest exigem mutação da base completa, evitando aprovar testes enfraquecidos sem verificar produção. Mudanças apenas em documentação rodam a suíte normal. Sem mutantes gerados não há score mensurável — isso não significa cobertura de 100%.
+
+```sh
+npm run test:mutation                  # snapshot staged + diff
+node scripts/mutation.mjs --base main  # HEAD comparado à base (conteúdo commitado)
+npm run test:mutation:full             # base completa do HEAD, não working tree
+npm run test:mutation:smoke            # verifica o gate em repositório descartável
+```
+
+O limite de 85% é agregado no escopo selecionado, não uma garantia por linha ou do projeto inteiro. Mutantes sobreviventes aparecem em `reports/mutation/index.html` e `reports/mutation/mutation.json`. Não há reutilização incremental de resultados. O runner Vitest coleta cobertura por teste em uma execução inicial completa (`related: false`) e seleciona os testes que exercitam cada mutante. Mutantes estáticos podem exigir uma execução mais ampla. Casos sem cobertura continuam reprovando o score; não são descartados para acelerar.
+
+Os arquivos continuam usando `node:test` em `npm test`. No Vitest, um adaptador limitado às APIs usadas pela suíte preserva registro de testes e cleanup (`t.after`); ambos os runners são validados no CI. O pool é `forks`, pois `threads` apresentou falhas nos testes de credenciais/ambiente. Cada arquivo recebe HOME descartável e chaves de busca vazias. Os testes de retry usam relógio controlado, executando os timers reais da implementação sem esperas de parede. Testes específicos verificam os delays e o cancelamento do timer por abort.
+
+Medições e limitações: [docs/measurements/mutation-testing.md](docs/measurements/mutation-testing.md). Exclusões de mutantes equivalentes devem ser pontuais, com justificativa no código usando as diretivas do Stryker, nunca uma redução silenciosa do limite.
+
+O CI repete o gate: diff contra a base do PR ou o commit anterior do push; execução manual (`workflow_dispatch`) mede a base completa. Relatórios ficam como artefatos do job. Erros de execução bloqueiam a aprovação; o job tem limite de 360 minutos. A validação inicial instrumentou 23 arquivos e gerou 3.304 mutantes. A amostra com seleção por cobertura passou, mas isso não comprova que a base completa já atinge 85%. Configure o check **Mutation score (85%)** como obrigatório na proteção da branch para impedir merge sem aprovação. Hooks locais podem ser ignorados e não substituem essa proteção.
 
 ## Licença
 
