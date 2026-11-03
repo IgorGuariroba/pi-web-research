@@ -69,11 +69,11 @@ test("boundary", (t) => {
   assert.notEqual(weak.status, 0, "surviving mutants must block the commit");
   assert.match(weak.stdout + weak.stderr, /mutation score|threshold/i);
   assert.match(weak.stdout, /Escopo de mutação: fixture\.ts\n/, "changed tests must mutate the production they reach");
-  // Pre-commit com orçamento estourado abandona a mutação (mesmo a que reprovaria) e delega ao CI.
-  const overBudget = runGate(["--staged", "--defer-full"], { MUTATION_TIME_LIMIT_SECONDS: "1" });
-  assert.equal(overBudget.status, 0, "pre-commit over its time limit defers mutation to CI");
-  assert.match(overBudget.stdout, /excedeu 1 s no pre-commit/);
-  assert.doesNotMatch(overBudget.stdout + overBudget.stderr, /Mutation gate reprovado/);
+  // Pre-commit roda só a suíte normal: mutantes sobreviventes não bloqueiam o commit (ficam para o CI).
+  const testsOnly = runGate(["--staged", "--tests-only"]);
+  assert.equal(testsOnly.status, 0, "pre-commit runs only the normal suite");
+  assert.match(testsOnly.stdout, /mutação não roda no commit/);
+  assert.doesNotMatch(testsOnly.stdout + testsOnly.stderr, /Escopo de mutação|Mutation gate reprovado/);
   git("reset", "--hard", "-q", "HEAD");
   writeFileSync(join(temp, "web-search.tests/unrelated.test.mjs"), 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("unrelated", () => { assert.equal(2 + 2, 4); });\n');
   git("add", "web-search.tests/unrelated.test.mjs");
@@ -90,10 +90,9 @@ test("boundary", (t) => {
   git("reset", "--hard", "-q", "HEAD");
   writeFileSync(join(temp, "vitest.config.mjs"), readFileSync(join(temp, "vitest.config.mjs"), "utf8") + "// infra\n");
   git("add", "vitest.config.mjs");
-  const deferred = runGate(["--staged", "--defer-full"]);
-  assert.equal(deferred.status, 0, "pre-commit defers full mutation to CI");
-  assert.match(deferred.stdout, /base completa será validada no CI/);
-  assert.doesNotMatch(deferred.stdout, /Escopo de mutação/);
+  const infraTestsOnly = runGate(["--staged", "--tests-only"]);
+  assert.equal(infraTestsOnly.status, 0, "pre-commit skips full mutation on infrastructure changes");
+  assert.doesNotMatch(infraTestsOnly.stdout, /Escopo de mutação/);
   git("reset", "--hard", "-q", "HEAD");
   writeFileSync(join(temp, "README.md"), "# Documentação pura\n");
   git("add", "README.md");
@@ -109,8 +108,9 @@ test("boundary", (t) => {
   git("reset", "--hard", "-q", "HEAD");
   writeFileSync(source, "export const positive = (value: number) => false;\n");
   git("add", "fixture.ts");
-  assert.notEqual(runGate().status, 0, "failing normal tests must block the commit");
-  console.log("Mutation smoke: staged isolation, per-test coverage, CI diff, impact scope, deferred full run, approval and rejection validated.");
+  assert.notEqual(runGate().status, 0, "failing normal tests must block the gate");
+  assert.notEqual(runGate(["--staged", "--tests-only"]).status, 0, "failing normal tests must block the commit");
+  console.log("Mutation smoke: staged isolation, per-test coverage, CI diff, impact scope, tests-only pre-commit, approval and rejection validated.");
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
