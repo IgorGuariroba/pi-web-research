@@ -13,6 +13,35 @@ case "$(git symbolic-ref --short -q HEAD || true)" in
     ;;
 esac
 
+# Higiene do staged: conflict markers não resolvidos e arquivos novos acima de
+# git config hooks.maxFileKB (padrão 500 KB; arquivos Git LFS são ignorados).
+check_merge_conflict() {
+  hits=$(git diff --cached -U0 --no-color --diff-filter=ACMR | grep -nE '^\+(<{7}|>{7})( |$)' | head -5 || true)
+  [ -z "$hits" ] && return 0
+  echo "Conflict markers não resolvidos no staged:" >&2
+  printf '%s\n' "$hits" | sed 's/^/   /' >&2
+  return 1
+}
+
+check_added_large_files() {
+  max_kb=$(git config --get hooks.maxFileKB || true); max_kb=${max_kb:-500}
+  big=$(git diff --cached --name-only --diff-filter=A -z | xargs -0 -I{} sh -c '
+    [ "$(git check-attr filter -- "$1" | sed "s/.*: //")" = lfs ] && exit 0
+    kb=$(( ($(git cat-file -s ":$1") + 1023) / 1024 ))
+    [ "$kb" -gt "$2" ] && echo "$1 (${kb} KB)"
+    exit 0' sh {} "$max_kb")
+  [ -z "$big" ] && return 0
+  {
+    echo "Arquivos novos acima de ${max_kb} KB (git config hooks.maxFileKB):"
+    printf '%s\n' "$big" | sed 's/^/   /'
+    echo "   Use Git LFS ou aumente o limite se eles devem ir para o git."
+  } >&2
+  return 1
+}
+
+check_merge_conflict || exit 1
+check_added_large_files || exit 1
+
 # Segredos no diff staged são barrados antes de sair da máquina (o CI repete o scan).
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "gitleaks não encontrado: instale-o (https://github.com/gitleaks/gitleaks#installing)." >&2

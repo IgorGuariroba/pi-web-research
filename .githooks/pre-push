@@ -4,11 +4,8 @@ set -eu
 # main só muda via PR (proteção no GitHub com enforce_admins); falha cedo em vez de no remoto.
 # stdin: <ref local> <sha local> <ref remota> <sha remoto>, uma linha por ref enviada.
 # Bypass deliberado: ALLOW_MAIN=1 git push ...
-if [ "${ALLOW_MAIN:-}" = "1" ]; then
-  cat >/dev/null
-  exit 0
-fi
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [ "${ALLOW_MAIN:-}" = "1" ] && continue
   case "$remote_ref" in
     refs/heads/main|refs/heads/master)
       echo "Push direto para a main bloqueado: envie uma branch e abra um PR (gh pr create)." >&2
@@ -17,3 +14,8 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
       ;;
   esac
 done
+
+# Suíte padrão (a mesma do CI) antes de sair da máquina; mutation fica no CI.
+# Bypass deliberado: git push --no-verify
+cd "$(git rev-parse --show-toplevel)"
+npm test
