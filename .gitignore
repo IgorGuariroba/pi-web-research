@@ -7,3 +7,14 @@ node_modules/
 # Relatórios e sandboxes de mutation testing
 reports/
 .stryker-tmp/
+
+# repo-harden
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+coverage/
+*.tsbuildinfo
+.npm/
+*.log
