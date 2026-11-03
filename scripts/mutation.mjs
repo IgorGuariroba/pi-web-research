@@ -1,18 +1,15 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { hasRelevantChanges, isProductionSource, mutationPlan, mutationRanges } from "./mutation-scope.mjs";
 
-const USAGE = "Uso: node scripts/mutation.mjs --staged [--defer-full] | --base <commit> | --full";
+const USAGE = "Uso: node scripts/mutation.mjs --staged [--tests-only] | --base <commit> | --full";
 const args = process.argv.slice(2);
-const staged = args[0] === "--staged" && (args.length === 1 || (args.length === 2 && args[1] === "--defer-full"));
-// Pre-commit: valida o escopo do diff e delega ao CI a base completa exigida por mudanças de infraestrutura.
-const deferFull = staged && args[1] === "--defer-full";
-// Pre-commit também tem orçamento de tempo: estourou, a mutação é abandonada e fica só para o CI.
-const DEFAULT_TIME_LIMIT_SECONDS = 300;
-const timeLimitMs = deferFull ? Number(process.env.MUTATION_TIME_LIMIT_SECONDS ?? DEFAULT_TIME_LIMIT_SECONDS) * 1000 : Infinity;
+const staged = args[0] === "--staged" && (args.length === 1 || (args.length === 2 && args[1] === "--tests-only"));
+// Pre-commit: só a suíte normal sobre o snapshot staged; a mutação fica para o CI (e execução manual).
+const testsOnly = staged && args[1] === "--tests-only";
 const full = args.length === 1 && args[0] === "--full";
 const base = args.length === 2 && args[0] === "--base" ? args[1] : undefined;
 if (!staged && !full && !base) {
@@ -62,7 +59,7 @@ const after = snapshot(tree);
 const plan = full
   ? { full: true, smoke: true, wholeFiles: [], runTests: true }
   : mutationPlan(files, { before: snapshot(staged ? "HEAD" : base), after });
-const runFull = plan.full && !deferFull;
+const runFull = plan.full;
 const ranges = runFull ? [] : files
   .filter((file) => isProductionSource(file) && !plan.wholeFiles.includes(file))
   .flatMap((file) => mutationRanges(file, git("diff", ...diffArgs, "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", "--", file)))
@@ -92,35 +89,28 @@ try {
     }
   }
   run("npm", ["test"]);
-  if (plan.smoke) run(process.execPath, ["scripts/mutation-smoke.mjs"]);
-  const configPath = join(temp, "stryker.config.mjs");
-  const { default: config } = await import(pathToFileURL(configPath).href);
-  const mutate = runFull ? config.mutate : [...plan.wholeFiles, ...ranges];
-  if (plan.full && deferFull) {
-    console.log("Infraestrutura de testes/mutação alterada: a base completa será validada no CI.");
-  }
-  if (!mutate.length) {
-    console.log("Nenhuma linha TypeScript de produção para mutar; testes normais aprovados.");
+  if (testsOnly) {
+    console.log("Suíte normal aprovada; mutação não roda no commit (CI ou npm run test:mutation).");
   } else {
-    console.log("Escopo de mutação:", mutate.join(", "));
-    writeFileSync(join(temp, "mutation.config.json"), JSON.stringify({ ...config, mutate }));
-    const stryker = [join(root, "node_modules/@stryker-mutator/core/bin/stryker.js"), "run", "mutation.config.json"];
-    try {
-      if (Number.isFinite(timeLimitMs)) {
-        const finished = await runWithin(process.execPath, stryker, temp, timeLimitMs);
-        if (!finished) {
-          console.log(`Mutação excedeu ${timeLimitMs / 1000} s no pre-commit: validação abandonada e delegada ao CI.`);
+    if (plan.smoke) run(process.execPath, ["scripts/mutation-smoke.mjs"]);
+    const configPath = join(temp, "stryker.config.mjs");
+    const { default: config } = await import(pathToFileURL(configPath).href);
+    const mutate = runFull ? config.mutate : [...plan.wholeFiles, ...ranges];
+    if (!mutate.length) {
+      console.log("Nenhuma linha TypeScript de produção para mutar; testes normais aprovados.");
+    } else {
+      console.log("Escopo de mutação:", mutate.join(", "));
+      writeFileSync(join(temp, "mutation.config.json"), JSON.stringify({ ...config, mutate }));
+      try {
+        run(process.execPath, [join(root, "node_modules/@stryker-mutator/core/bin/stryker.js"), "run", "mutation.config.json"]);
+      } finally {
+        const reports = join(temp, "reports/mutation");
+        if (existsSync(reports)) {
+          mkdirSync(join(root, "reports"), { recursive: true });
+          rmSync(join(root, "reports/mutation"), { recursive: true, force: true });
+          cpSync(reports, join(root, "reports/mutation"), { recursive: true });
+          console.log("Relatório: reports/mutation/index.html");
         }
-      } else {
-        run(process.execPath, stryker);
-      }
-    } finally {
-      const reports = join(temp, "reports/mutation");
-      if (existsSync(reports)) {
-        mkdirSync(join(root, "reports"), { recursive: true });
-        rmSync(join(root, "reports/mutation"), { recursive: true, force: true });
-        cpSync(reports, join(root, "reports/mutation"), { recursive: true });
-        console.log("Relatório: reports/mutation/index.html");
       }
     }
   }
@@ -131,31 +121,3 @@ try {
   rmSync(temp, { recursive: true, force: true });
 }
 process.exitCode = status;
-
-/**
- * Roda o comando com prazo. `true` se terminou com sucesso; `false` se o prazo
- * estourou (o grupo de processos inteiro é morto, incluindo os workers do Stryker).
- */
-function runWithin(command, params, cwd, limitMs) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, params, { cwd, stdio: "inherit", detached: true });
-    let expired = false;
-    // Grupo destacado não recebe o Ctrl+C do terminal: repassa a interrupção.
-    const abort = () => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* já terminou */ } process.exit(130); };
-    process.once("SIGINT", abort);
-    process.once("SIGTERM", abort);
-    const timer = setTimeout(() => {
-      expired = true;
-      try { process.kill(-child.pid, "SIGKILL"); } catch { /* já terminou */ }
-    }, limitMs);
-    child.on("error", (error) => { clearTimeout(timer); reject(error); });
-    child.on("exit", (code, signal) => {
-      clearTimeout(timer);
-      process.off("SIGINT", abort);
-      process.off("SIGTERM", abort);
-      if (expired) return resolvePromise(false);
-      if (code === 0) return resolvePromise(true);
-      reject(new Error(`${command} falhou (status ${code}, sinal ${signal ?? "nenhum"})`));
-    });
-  });
-}

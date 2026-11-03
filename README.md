@@ -169,8 +169,9 @@ Requer Node.js 24, `npm ci` (incluindo devDependencies) e [gitleaks](https://git
 
 1. `gitleaks git --staged`: segredos no conteúdo staged (o CI repete o scan no histórico).
 2. `git diff --cached --check`: whitespace e marcadores de conflito adicionados.
-3. `npm test`: suíte normal sobre uma cópia exata do **conteúdo staged**.
-4. StrykerJS: mutation testing no escopo do diff (abaixo), com **score mínimo de 85%**, configurado em `stryker.config.mjs`. O hook usa `--defer-full`: quando a infraestrutura de testes muda, ele valida o escopo do diff e delega a base completa ao CI. Nesse modo a mutação tem limite de **5 minutos** (`MUTATION_TIME_LIMIT_SECONDS`); se estourar, o Stryker é interrompido, o commit segue e a validação fica só para o CI.
+3. `npm test`: suíte normal sobre uma cópia exata do **conteúdo staged** (`scripts/mutation.mjs --staged --tests-only`).
+
+Mutation testing **não roda no commit**. O gate StrykerJS (escopo do diff, abaixo, com **score mínimo de 85%** configurado em `stryker.config.mjs`) é obrigatório no CI e pode ser executado manualmente com `npm run test:mutation` antes do commit.
 
 Código e testes unstaged/untracked não participam da aprovação. O snapshot usa `git write-tree` e `git archive`, sem criar commits ou alterar o index. As dependências instaladas são compartilhadas; mantenha manifesto e lockfile alinhados ao snapshot e rode `npm ci` após mudanças de dependências.
 
@@ -195,7 +196,7 @@ Os arquivos continuam usando `node:test` em `npm test`. No Vitest, um adaptador 
 
 Medições e limitações: [docs/measurements/mutation-testing.md](docs/measurements/mutation-testing.md). Exclusões de mutantes equivalentes devem ser pontuais, com justificativa no código usando as diretivas do Stryker, nunca uma redução silenciosa do limite.
 
-O CI repete o gate sem `--defer-full`: diff contra a base do PR ou o commit anterior do push; execução manual (`workflow_dispatch`) mede a base completa. Relatórios ficam como artefatos do job. Erros de execução bloqueiam a aprovação; o job tem limite de 360 minutos. A validação inicial instrumentou 23 arquivos e gerou 3.304 mutantes. A amostra com seleção por cobertura passou, mas isso não comprova que a base completa já atinge 85%. Configure o check **Mutation score (85%)** como obrigatório na proteção da branch para impedir merge sem aprovação. Hooks locais podem ser ignorados e não substituem essa proteção.
+O CI executa o gate de mutação: diff contra a base do PR ou o commit anterior do push; execução manual (`workflow_dispatch`) mede a base completa. Relatórios ficam como artefatos do job. Erros de execução bloqueiam a aprovação; o job tem limite de 360 minutos. A validação inicial instrumentou 23 arquivos e gerou 3.304 mutantes. A amostra com seleção por cobertura passou, mas isso não comprova que a base completa já atinge 85%. Configure o check **Mutation score (85%)** como obrigatório na proteção da branch para impedir merge sem aprovação. Hooks locais podem ser ignorados e não substituem essa proteção.
 
 ## Licença
 
