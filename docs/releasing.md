@@ -4,8 +4,10 @@
 
 `npm ci && npm test` executa a suíte offline com HOME descartável e sem chaves
 Exa/Tavily. Os scripts `raw-*.test.mjs` são diagnósticos reais opt-in, não testes
-automáticos. O check obrigatório da main é `Tests (Node 24)`; a branch deve estar
-atualizada antes do merge. Dependabot acompanha npm e GitHub Actions semanalmente.
+automáticos. Os checks obrigatórios da main (ruleset `default-branch: protection`)
+são `Tests (Node 24)`, `Mutation score (85%)` e `Secret scan (gitleaks)`; a branch
+deve estar atualizada antes do merge, só squash é permitido e tags `v*` (ruleset
+`tags: release`) só podem ser criadas pelo admin e nunca movidas ou apagadas. Dependabot acompanha npm e GitHub Actions semanalmente.
 
 ## Atualizações automáticas de segurança
 
@@ -24,27 +26,18 @@ ficam para revisão manual. O workflow privilegiado não faz checkout nem execut
 código do PR. Se futuramente exigirmos revisão humana, ela também será exigida
 para esses PRs automáticos.
 
-### Auditoria de 2026-11-01
+### Auditoria de 2026-11-02
 
-`npm audit` reportou três pacotes afetados na instalação limpa: o peer
-`@earendil-works/pi-coding-agent@1.4.0` e suas dependências `undici@8.10.2`
-(high) e `minimatch@10.2.6` (moderate). O Pi fixa essas versões exatamente.
-`fixAvailable: false` não significa ausência de patches nas bibliotecas:
+`npm audit fix` (sem `--force`) atualizou o lockfile: Pi `1.4.0 → 1.5.0`
+(traz `undici@8.12.3` e `minimatch@11.0.3`), `qs 6.15.1 → 6.17.1` e
+`typed-rest-client 2.3.1 → 2.3.0`. Restam 3 ocorrências moderate, todas na
+cadeia de devDependencies do Stryker (`@stryker-mutator/core@10.1.1` →
+`minimatch@10.2.6`), sem correção semver-compatível:
+https://github.com/advisories/GHSA-g3hv-75wg-m249
 
-- undici: avisos consultados corrigidos a partir de 8.12.2;
-  https://github.com/advisories/GHSA-2m5v-pch6-74hx
-- minimatch: aviso corrigido a partir de 11.0.1;
-  https://github.com/advisories/GHSA-g3hv-75wg-m249
-
-Não existe atualização aplicável do Pi no momento da consulta (latest 1.4.0).
-Não aplicamos `npm audit fix --force` nem overrides: minimatch exigiria salto
-major, e overrides desta extensão não corrigem a instalação externa do Pi host.
-A ação necessária é o upstream atualizar essas dependências e publicar uma nova
-versão do Pi; depois atualizar o lockfile, executar a suíte e repetir a auditoria.
-
-A API de alertas do Dependabot estava vazia nesta consulta, apesar do resultado
-do npm audit. Não tratamos ausência de alerta GitHub como ausência de risco;
-sem alerta/PR elegível, o auto-merge não pode remediar essas ocorrências sozinho.
+Não aplicamos `--force` nem overrides: o fix exigiria salto major do minimatch
+dentro do Stryker, que só roda no desenvolvimento/CI e não é publicado. Aguardar
+o upstream do Stryker; o Dependabot abre o PR quando houver versão compatível.
 
 ## Configuração inicial do npm (mantenedor)
 

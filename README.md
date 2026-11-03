@@ -163,13 +163,14 @@ Ative o hook versionado uma vez em cada clone:
 git config core.hooksPath .githooks
 ```
 
-A `main` só muda via PR. Os hooks bloqueiam localmente commit na `main` (`pre-commit`) e push para `main` (`pre-push`), antes de esbarrar na proteção do GitHub.
+A `main` só muda via PR. Os hooks bloqueiam localmente commit na `main`/`master` (`pre-commit`) e push para elas (`pre-push`), antes de esbarrar na proteção do GitHub. Bypass deliberado: `ALLOW_MAIN=1 git commit ...` / `ALLOW_MAIN=1 git push ...` (ou `--no-verify`).
 
-Requer Node.js 24 e `npm ci` (incluindo devDependencies). O hook bloqueia o commit se qualquer etapa falhar:
+Requer Node.js 24, `npm ci` (incluindo devDependencies) e [gitleaks](https://github.com/gitleaks/gitleaks#installing) no `PATH`. O hook bloqueia o commit se qualquer etapa falhar:
 
-1. `git diff --cached --check`: whitespace e marcadores de conflito adicionados.
-2. `npm test`: suíte normal sobre uma cópia exata do **conteúdo staged**.
-3. StrykerJS: mutation testing no escopo do diff (abaixo), com **score mínimo de 85%**, configurado em `stryker.config.mjs`. O hook usa `--defer-full`: quando a infraestrutura de testes muda, ele valida o escopo do diff e delega a base completa ao CI. Nesse modo a mutação tem limite de **5 minutos** (`MUTATION_TIME_LIMIT_SECONDS`); se estourar, o Stryker é interrompido, o commit segue e a validação fica só para o CI.
+1. `gitleaks git --staged`: segredos no conteúdo staged (o CI repete o scan no histórico).
+2. `git diff --cached --check`: whitespace e marcadores de conflito adicionados.
+3. `npm test`: suíte normal sobre uma cópia exata do **conteúdo staged**.
+4. StrykerJS: mutation testing no escopo do diff (abaixo), com **score mínimo de 85%**, configurado em `stryker.config.mjs`. O hook usa `--defer-full`: quando a infraestrutura de testes muda, ele valida o escopo do diff e delega a base completa ao CI. Nesse modo a mutação tem limite de **5 minutos** (`MUTATION_TIME_LIMIT_SECONDS`); se estourar, o Stryker é interrompido, o commit segue e a validação fica só para o CI.
 
 Código e testes unstaged/untracked não participam da aprovação. O snapshot usa `git write-tree` e `git archive`, sem criar commits ou alterar o index. As dependências instaladas são compartilhadas; mantenha manifesto e lockfile alinhados ao snapshot e rode `npm ci` após mudanças de dependências.
 

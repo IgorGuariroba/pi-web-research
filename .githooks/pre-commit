@@ -2,10 +2,23 @@
 set -eu
 
 # main só muda via PR (proteção no GitHub); barra o commit local antes do gate caro.
-if [ "$(git symbolic-ref --short -q HEAD || true)" = "main" ]; then
-  echo "Commit direto na main bloqueado: crie uma branch (git switch -c <nome>) e abra um PR." >&2
+# Bypass deliberado: ALLOW_MAIN=1 git commit ... (pula só esta checagem).
+case "$(git symbolic-ref --short -q HEAD || true)" in
+  main|master)
+    if [ "${ALLOW_MAIN:-}" != "1" ]; then
+      echo "Commit direto na main bloqueado: crie uma branch (git switch -c <nome>) e abra um PR." >&2
+      echo "Bypass deliberado: ALLOW_MAIN=1 git commit ..." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# Segredos no diff staged são barrados antes de sair da máquina (o CI repete o scan).
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "gitleaks não encontrado: instale-o (https://github.com/gitleaks/gitleaks#installing)." >&2
   exit 1
 fi
+gitleaks git --staged --redact --no-banner
 
 # Testes e mutation testing usam o snapshot staged, não a árvore de trabalho.
 cd "$(git rev-parse --show-toplevel)"
